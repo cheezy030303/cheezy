@@ -86,8 +86,6 @@ const KPI_STANDARDS = {
 
 };
 
-const AMOUNT_SPENT_ADJUSTMENT_RATE = 1.1 / 0.8;
-
 // 改善アクション
 
 const IMPROVEMENT_ACTIONS = {
@@ -156,55 +154,33 @@ const CSV_COLUMN_TITLES = [
 
 const SHEET_HEADER_TITLES = [
 
-  '画像表示',                   // 0 - 画像表示（IMAGE関数）
+  'Image',                      // 0 - 画像URL
 
-  'テキスト',                   // 1 - Content Title
+  '画像表示',                   // 1 - 画像表示（IMAGE関数）
 
-  '配信金額',                   // 2 - Amount Spent
+  '期間',                       // 2 - 期間
 
-  'Imp',                        // 3 - Impressions
+  'Content Title',              // 3 - コンテンツタイトル
 
-  'CPC',                        // 4 - Avg. CPC
+  'ID',                         // 4 - ID
 
-  'Clicks',                     // 5 - Clicks
+  '配信金額',                   // 5 - Amount Spent
 
-  'CTR',                        // 6 - CTR
+  'Impressions',                // 6 - Impressions
 
-  'CV',                         // 7 - Conversions (Click)
+  'Avg. CPC',                   // 7 - Avg. CPC
 
-  'CVR',                        // 8 - Conversion Rate (Click)
+  'Clicks',                     // 8 - Clicks
 
-  'CPA(円)'                     // 9 - CPA
+  'CTR',                        // 9 - CTR
+
+  'Conversions (Click)',        // 10 - Conversions
+
+  'Conversion Rate',            // 11 - Conversion Rate
+
+  'CPA(円)'                     // 12 - CPA
 
 ];
-
-// CSVヘッダーの別名候補（キーは上記CSV_COLUMN_TITLESの正規名称）
-
-const CSV_COLUMN_ALIASES = {
-
-  'Image': ['画像URL', 'image', 'img', 'Image URL', 'Thumbnail'],
-
-  'Content Title': ['テキスト', 'Title', 'ContentTitle', 'Headline', 'Ad Title'],
-
-  'ID': ['広告ID', 'Campaign ID', 'Content ID', 'Ad ID'],
-
-  'Amount Spent': ['配信金額', 'Cost', 'Spend', 'AmountSpent', 'Amount Spent (JPY)', 'Cost (JPY)', '費用'],
-
-  'Impressions': ['Imp', 'Impr', 'Impressions (Number)', '表示回数', 'Impressions.', 'Impression'],
-
-  'Avg. CPC': ['CPC', 'Average CPC', 'Avg CPC', 'Avg. CPC (JPY)', '平均CPC', 'Cost Per Click'],
-
-  'Clicks': ['Click', '総クリック数', 'Clicks (Number)', 'クリック数'],
-
-  'CTR': ['Click Through Rate', 'Click-Through Rate', 'CTR (%)', 'CTR(%)', 'クリック率'],
-
-  'Conversions (Click)': ['Conversions', 'CV', 'Conversion', 'Conversions (Number)', 'コンバージョン'],
-
-  'Conversion Rate (Click)': ['Conversion Rate', 'CVR', 'Conv. Rate', 'Conversion Rate (%)', 'CVR (%)', 'コンバージョン率'],
-
-  'CPA (Click)': ['CPA', 'CPA(円)', 'Cost Per Action', 'CPA (Click) (JPY)', 'CPA(JPY)', '獲得単価']
-
-};
 
 /**
 
@@ -354,24 +330,17 @@ function importYesterdayCsvAndAnalyze() {
     
  
     // 既に処理済みかを確認
- 
     const processed = getProcessedFiles();
- 
     if (processed.includes(targetFile.getId())) {
- 
       Logger.log('既に処理済みのためスキップ: ' + targetFile.getName());
- 
       return;
- 
     }
- 
-    
- 
-    // importCSVToSheet(targetFile);
- 
+
+    // ★ここを有効化
+    importCSVToSheet(targetFile);
     markFileAsProcessed(targetFile.getId(), targetFile.getName());
- 
     generatePeriodSummaries();
+
  
   } catch (error) {
  
@@ -740,17 +709,23 @@ function transformCsvDataToAdRows_(csvData, contextLabel) {
 
   if (!csvData || csvData.length === 0) {
 
-    return { rows: [], imageUrls: [] };
+    return [];
 
   }
+
+  
+
+  const label = contextLabel ? `[${contextLabel}] ` : '';
 
   const headerRow = csvData[0];
 
   if (!headerRow || headerRow.length === 0 || headerRow.join('').trim() === '') {
 
-    throw new Error(`${contextLabel ? `[${contextLabel}] ` : ''}CSVのヘッダー行が空です`);
+    throw new Error(`${label}CSVのヘッダー行が空です`);
 
   }
+
+  
 
   const columnIndices = findColumnIndices(headerRow, CSV_COLUMN_TITLES);
 
@@ -758,13 +733,13 @@ function transformCsvDataToAdRows_(csvData, contextLabel) {
 
   if (notFoundColumns.length > 0) {
 
-    Logger.log(`${contextLabel ? `[${contextLabel}] ` : ''}警告: 以下の列が見つかりませんでした: ${notFoundColumns.join(', ')}`);
+    Logger.log(`${label}警告: 以下の列が見つかりませんでした: ${notFoundColumns.join(', ')}`);
 
   }
 
-  const rowsToInsert = [];
+  
 
-  const imageUrls = [];
+  const rowsToInsert = [];
 
   for (let i = 1; i < csvData.length; i++) {
 
@@ -776,6 +751,8 @@ function transformCsvDataToAdRows_(csvData, contextLabel) {
 
     }
 
+    
+
     const rowContent = row.join('').trim();
 
     if (rowContent === '') {
@@ -783,6 +760,8 @@ function transformCsvDataToAdRows_(csvData, contextLabel) {
       continue;
 
     }
+
+    
 
     const extractedData = columnIndices.map(colIndex => {
 
@@ -798,71 +777,41 @@ function transformCsvDataToAdRows_(csvData, contextLabel) {
 
     });
 
+    
+
     const hasValidData = extractedData.some(cell => cell !== '');
 
-    if (!hasValidData || extractedData.length === 0) {
+    if (hasValidData && extractedData.length > 0) {
 
-      continue;
+      const periodLabel = contextLabel || '';
+
+      const dataWithImage = [
+
+        extractedData[0],
+
+        '',
+
+        periodLabel,
+
+        extractedData[1],
+
+        extractedData[2],
+
+        ...extractedData.slice(3)
+
+      ];
+
+      
+
+      rowsToInsert.push(dataWithImage);
 
     }
-
-    const imageUrl = extractedData[0] || '';
-
-    const contentTitle = extractedData[1] || '';
-
-    const rawAmount = cleanNumericValue(extractedData[3]) || 0;
-
-    if (rawAmount <= 0) {
-
-      continue;
-
-    }
-
-    const adjustedAmount = rawAmount * AMOUNT_SPENT_ADJUSTMENT_RATE;
-
-    const impressions = extractedData[4] || '';
-
-    const avgCpc = extractedData[5] || '';
-
-    const clicks = extractedData[6] || '';
-
-    const ctr = extractedData[7] || '';
-
-    const conversions = extractedData[8] || '';
-
-    const conversionRate = extractedData[9] || '';
-
-    const cpa = extractedData[10] || '';
-
-    rowsToInsert.push([
-
-      '',
-
-      contentTitle,
-
-      adjustedAmount,
-
-      impressions,
-
-      avgCpc,
-
-      clicks,
-
-      ctr,
-
-      conversions,
-
-      conversionRate,
-
-      cpa
-
-    ]);
-
-    imageUrls.push(imageUrl);
 
   }
 
-  return { rows: rowsToInsert, imageUrls };
+  
+
+  return rowsToInsert;
 
 }
 
@@ -1210,9 +1159,7 @@ function renderAdDataSheetFromRawBlocks_(rawBlocks) {
 
   let currentRow = 2;
 
-  const headingStartColumn = 1;
-
-  const headingWidth = SHEET_HEADER_TITLES.length;
+  const headingWidth = Math.max(1, SHEET_HEADER_TITLES.length - 2);
 
   rawBlocks.forEach(block => {
 
@@ -1226,9 +1173,15 @@ function renderAdDataSheetFromRawBlocks_(rawBlocks) {
 
     const headingBackground = block && block.error ? '#F4CCCC' : '#D9E1F2';
 
-    dataSheet.getRange(currentRow, 1, 1, dataSheet.getMaxColumns()).breakApart();
+    const totalColumns = Math.max(SHEET_HEADER_TITLES.length, dataSheet.getLastColumn());
 
-    const headingRange = dataSheet.getRange(currentRow, headingStartColumn, 1, headingWidth);
+    const breakWidth = Math.max(1, totalColumns - 2);
+
+    const headingWidth = Math.max(1, SHEET_HEADER_TITLES.length - 2);
+
+    dataSheet.getRange(currentRow, 3, 1, breakWidth).breakApart();
+
+    const headingRange = dataSheet.getRange(currentRow, 3, 1, headingWidth);
 
     headingRange.merge()
 
@@ -1262,13 +1215,13 @@ function renderAdDataSheetFromRawBlocks_(rawBlocks) {
 
     try {
 
-      const { rows, imageUrls } = transformCsvDataToAdRows_(block.data, label);
+      const rows = transformCsvDataToAdRows_(block.data, label);
 
       if (!rows || rows.length === 0) {
 
-        dataSheet.getRange(currentRow, 1, 1, dataSheet.getMaxColumns()).breakApart();
+        dataSheet.getRange(currentRow, 3, 1, breakWidth).breakApart();
 
-        dataSheet.getRange(currentRow, headingStartColumn, 1, headingWidth)
+        dataSheet.getRange(currentRow, 3, 1, headingWidth)
 
           .merge()
 
@@ -1288,21 +1241,33 @@ function renderAdDataSheetFromRawBlocks_(rawBlocks) {
 
       }
 
-      const targetRange = dataSheet.getRange(currentRow, headingStartColumn, rows.length, SHEET_HEADER_TITLES.length);
+      const headerRange = dataSheet.getRange(currentRow, 1, 1, SHEET_HEADER_TITLES.length);
 
-      targetRange.setValues(rowsToInsert);
+      headerRange.setValues([SHEET_HEADER_TITLES])
 
-      applyMetricFormulas_(dataSheet, currentRow, rows.length);
+        .setBackground('#C0C0C0')
 
-      const imageFormulas = rows.map((_, index) => {
+        .setFontColor('#000000')
 
-        const imageUrl = imageUrls[index] || '';
+        .setFontWeight('bold')
+
+        .setHorizontalAlignment('center');
+
+      currentRow += 1;
+
+      const targetRange = dataSheet.getRange(currentRow, 1, rows.length, SHEET_HEADER_TITLES.length);
+
+      targetRange.setValues(rows);
+
+      const imageFormulas = rows.map((row, index) => {
+
+        const imageUrl = row[0] || '';
 
         if (imageUrl && imageUrl.trim() !== '') {
 
-          const safeUrl = imageUrl.replace(/"/g, '""');
+          const rowNum = currentRow + index;
 
-          return [`=IF(LEN("${safeUrl}"), IMAGE("${safeUrl}", 1), "")`];
+          return [`=IF(A${rowNum}<>"", IMAGE(A${rowNum}, 1), "")`];
 
         }
 
@@ -1310,7 +1275,7 @@ function renderAdDataSheetFromRawBlocks_(rawBlocks) {
 
       });
 
-      dataSheet.getRange(currentRow, headingStartColumn, rows.length, 1).setFormulas(imageFormulas);
+      dataSheet.getRange(currentRow, 2, rows.length, 1).setFormulas(imageFormulas);
 
       currentRow += rows.length + 1;
 
@@ -1322,19 +1287,19 @@ function renderAdDataSheetFromRawBlocks_(rawBlocks) {
 
   });
 
-  for (let col = headingStartColumn; col < headingStartColumn + SHEET_HEADER_TITLES.length; col++) {
+  for (let i = 3; i <= SHEET_HEADER_TITLES.length; i++) {
 
-    dataSheet.autoResizeColumn(col);
+    dataSheet.autoResizeColumn(i);
 
   }
 
-  dataSheet.setColumnWidth(1, 120);
+  dataSheet.setColumnWidth(1, 50);
 
-  dataSheet.setColumnWidth(2, 220);
+  dataSheet.setColumnWidth(2, 120);
 
-  for (let col = 3; col <= SHEET_HEADER_TITLES.length; col++) {
+  for (let i = 5; i <= 12; i++) {
 
-    dataSheet.setColumnWidth(col, 90);
+    dataSheet.setColumnWidth(i, 90);
 
   }
 
@@ -1350,14 +1315,6 @@ function formatCurrency_(value) {
  
   return '¥' + Number(value || 0).toLocaleString();
  
-}
- 
-function formatCurrencyWithDecimals_(value) {
-
-  const num = Number(value || 0);
-
-  return '¥' + num.toLocaleString('ja-JP', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
 }
  
 function formatPercent_(value) {
@@ -1915,7 +1872,7 @@ function generateWeeklyReport() {
           if (!campaignName || campaignName.toLowerCase() === 'total' || campaignName.toLowerCase() === '合計') continue;
           
           const costRaw = cleanNumericValue(idxCost >= 0 ? row[idxCost] : null) || 0;
-          const cost = costRaw * AMOUNT_SPENT_ADJUSTMENT_RATE;
+          const cost = costRaw * 1.1 / 0.8;
           const imp = cleanNumericValue(idxImp >= 0 ? row[idxImp] : null) || 0;
           const click = cleanNumericValue(idxClick >= 0 ? row[idxClick] : null) || 0;
           const conv = cleanNumericValue(idxConv >= 0 ? row[idxConv] : null) || 0;
@@ -2070,7 +2027,7 @@ function generateWeeklyReport() {
           const costRaw = cleanNumericValue(idxCost >= 0 ? row[idxCost] : null) || 0;
           if (!contentTitle || costRaw <= 0) continue;
           
-          const cost = costRaw * AMOUNT_SPENT_ADJUSTMENT_RATE;
+          const cost = costRaw * 1.1 / 0.8;
           const imp = cleanNumericValue(idxImp >= 0 ? row[idxImp] : null) || 0;
           const click = cleanNumericValue(idxClick >= 0 ? row[idxClick] : null) || 0;
           const conv = cleanNumericValue(idxConv >= 0 ? row[idxConv] : null) || 0;
@@ -2360,7 +2317,7 @@ function extractSummaryFromCsv_(file) {
     
     // データを取得
     const costRaw = cleanNumericValue(idxCost >= 0 ? dataRow[idxCost] : null) || 0;
-    const cost = costRaw * AMOUNT_SPENT_ADJUSTMENT_RATE; // /0.8*1.1 の計算
+    const cost = costRaw * 1.1 / 0.8; // /0.8*1.1 の計算
     const cpcRaw = cleanNumericValue(idxCpc >= 0 ? dataRow[idxCpc] : null);
     const impRaw = cleanNumericValue(idxImp >= 0 ? dataRow[idxImp] : null);
     const clickRaw = cleanNumericValue(idxClick >= 0 ? dataRow[idxClick] : null);
@@ -2682,26 +2639,25 @@ function importCSVToSheet(file) {
 
     const rowsToInsert = [];
 
-    const imageUrls = [];
+    
 
     for (let i = 1; i < csvData.length; i++) {
 
       const row = csvData[i];
 
+      
+      // 行が空でないことを確認
       if (!row || row.length === 0) {
-
         continue;
-
       }
-
+      
+      // 行の内容がすべて空でないことを確認
       const rowContent = row.join('').trim();
-
       if (rowContent === '') {
-
         continue;
-
       }
-
+      
+      // 列インデックスからデータを抽出
       const extractedData = columnIndices.map(colIndex => {
 
         if (colIndex !== -1 && colIndex < row.length) {
@@ -2716,133 +2672,90 @@ function importCSVToSheet(file) {
 
       });
 
+      
+      // 抽出したデータがすべて空でないことを確認
       const hasValidData = extractedData.some(cell => cell !== '');
-
-      if (!hasValidData || extractedData.length === 0) {
-
-        continue;
-
-      }
-
-      const imageUrl = extractedData[0] || '';
-
-      const contentTitle = extractedData[1] || '';
-
-      const rawAmount = cleanNumericValue(extractedData[3]) || 0;
-
-      if (rawAmount <= 0) {
-
-        continue;
-
-      }
-
-      const adjustedAmount = rawAmount * AMOUNT_SPENT_ADJUSTMENT_RATE;
-
-      const amountSpent = formatCurrencyWithDecimals_(adjustedAmount);
-
-      const impressions = extractedData[4] || '';
-
-      const avgCpc = extractedData[5] || '';
-
-      const clicks = extractedData[6] || '';
-
-      const ctr = extractedData[7] || '';
-
-      const conversions = extractedData[8] || '';
-
-      const cvr = extractedData[9] || '';
-
-      const cpa = extractedData[10] || '';
-
-      const rowValues = [
-
-        '',
-
-        contentTitle,
-
-        adjustedAmount,
-
-        impressions,
-
-        avgCpc,
-
-        clicks,
-
-        ctr,
-
-        conversions,
-
-        cvr,
-
-        cpa
-
-      ];
-
-      if (rowValues.length !== SHEET_HEADER_TITLES.length) {
-
-        Logger.log(`importCSVToSheet length mismatch: data=${rowValues.length}, expected=${SHEET_HEADER_TITLES.length}, row=${JSON.stringify(rowValues)}`);
-
-        throw new Error(`CSV列数が想定と異なります。データ列数: ${rowValues.length}, 期待値: ${SHEET_HEADER_TITLES.length}\n該当行: ${JSON.stringify(rowValues)}`);
-
-      }
-
-      rowsToInsert.push(rowValues);
-
-      imageUrls.push(imageUrl);
-
-    }
-
-    if (rowsToInsert.length > 0) {
-
-      const lastRow = dataSheet.getLastRow();
-
-      const startRow = lastRow + 1;
-
-      const targetRange = dataSheet.getRange(startRow, 1, rowsToInsert.length, SHEET_HEADER_TITLES.length);
-
-      targetRange.setValues(rowsToInsert);
-
-      const imageFormulas = imageUrls.map(url => {
-
-        if (url && url.trim() !== '') {
-
-          const safeUrl = url.replace(/"/g, '""');
-
-          return [`=IF(LEN("${safeUrl}"), IMAGE("${safeUrl}", 1), "")`];
-
+      
+      if (hasValidData && extractedData.length > 0) {
+        // 画像表示列を追加（インデックス1の位置）
+        // データ配列に画像表示列を挿入（インデックス1の位置）
+        // 画像表示列は後でIMAGE関数の式を設定するため、ここでは空文字列を設定
+        const dataWithImage = [
+          extractedData[0],      // Image URL (インデックス0)
+          '',                    // 画像表示（後でIMAGE関数の式を設定）- インデックス1
+          ...extractedData.slice(1) // 残りのデータ（インデックス2以降）
+        ];
+        
+        if (dataWithImage.length !== SHEET_HEADER_TITLES.length) {
+          Logger.log(`importCSVToSheet length mismatch: data=${dataWithImage.length}, expected=${SHEET_HEADER_TITLES.length}, row=${JSON.stringify(dataWithImage)}`);
+          throw new Error(`CSV列数が想定と異なります。データ列数: ${dataWithImage.length}, 期待値: ${SHEET_HEADER_TITLES.length}\n該当行: ${JSON.stringify(dataWithImage)}`);
         }
-
-        return [''];
-
-      });
-
-      dataSheet.getRange(startRow, 1, rowsToInsert.length, 1).setFormulas(imageFormulas);
-
-      Logger.log(`${rowsToInsert.length}行のデータを追加しました`);
-
-    } else {
-
-      Logger.log('追加する有効なデータがありませんでした');
-
-      throw new Error('CSVファイルに有効なデータ行がありません');
-
+        
+        // 配信金額（Amount Spent）が0でないことを確認
+        // 配信金額はインデックス4（画像表示列追加後）
+        const amountSpentIndex = 3;
+        const amountSpentValue = dataWithImage[amountSpentIndex];
+        
+        // 配信金額を数値に変換してチェック
+        const amountSpent = cleanNumericValue(amountSpentValue);
+        
+        // 配信金額が0でない場合のみ追加（nullやundefinedの場合は追加する）
+        if (amountSpent === null || amountSpent === undefined || amountSpent !== 0) {
+          if (rowsToInsert.length < 5) {
+            Logger.log(`importCSVToSheet row length: ${dataWithImage.length} -> ${JSON.stringify(dataWithImage)}`);
+          }
+          rowsToInsert.push(dataWithImage);
+        } else {
+          Logger.log(`配信金額が0のため、行をスキップしました: ${dataWithImage[2]} (ID: ${dataWithImage[3]})`);
+        }
+      }
     }
 
-    for (let i = 3; i <= SHEET_HEADER_TITLES.length; i++) {
+    
+    // バッチでデータを追加
+    if (rowsToInsert.length > 0) {
+      const lastRow = dataSheet.getLastRow();
+      const startRow = lastRow + 1;
+      const targetRange = dataSheet.getRange(startRow, 1, rowsToInsert.length, SHEET_HEADER_TITLES.length);
+      
+      // データを設定
+      targetRange.setValues(rowsToInsert);
+      
+      // 画像表示列（列B、インデックス2）にIMAGE関数の式を設定
+      const imageColumnRange = dataSheet.getRange(startRow, 2, rowsToInsert.length, 1);
+      // setFormulasは2次元配列（string[][]）を期待するため、各要素を配列でラップ
+      const imageFormulas = rowsToInsert.map((row, index) => {
+        const imageUrl = row[0] || ''; // Image URL (インデックス0)
+        if (imageUrl && imageUrl.trim() !== '') {
+          // 相対参照を使用（A列の同じ行のURLを参照）
+          // IMAGE関数の第2引数: 2 = 画像をセルに合わせて縦横比を維持してリサイズ
+          const rowNum = startRow + index;
+          return [`=IF(A${rowNum}<>"", IMAGE(A${rowNum}, 1), "")`];
+        }
+        return [''];
+      });
+      imageColumnRange.setFormulas(imageFormulas);
+      
+      Logger.log(`${rowsToInsert.length}行のデータを追加しました`);
+    } else {
+      Logger.log('追加する有効なデータがありませんでした');
+      throw new Error('CSVファイルに有効なデータ行がありません');
+    }
+    
+
+    // 列幅を自動調整
+
+    for (let i = 4; i <= SHEET_HEADER_TITLES.length; i++) {
 
       dataSheet.autoResizeColumn(i);
 
     }
+    
+    // A/B/C列の幅を設定
+    dataSheet.setColumnWidth(1, 50);
+    dataSheet.setColumnWidth(2, 120);
+    dataSheet.setColumnWidth(3, 90);
 
-    dataSheet.setColumnWidth(1, 120);
-
-    dataSheet.setColumnWidth(2, 220);
-
-    for (let i = 3; i <= SHEET_HEADER_TITLES.length; i++) {
-
-      dataSheet.setColumnWidth(i, 90);
-
-    }
     
 
     Logger.log('CSVファイルを取り込みました: ' + file.getName());
@@ -2877,37 +2790,45 @@ function findColumnIndices(headerRow, targetTitles) {
 
   const indices = targetTitles.map((targetTitle, idx) => {
 
-    const candidates = [targetTitle, ...((CSV_COLUMN_ALIASES[targetTitle] || []))];
+    // 完全一致で検索
 
-    let foundIndex = -1;
+    let index = headerRow.findIndex(header => 
 
-    for (let candidate of candidates) {
+      header && header.trim() === targetTitle.trim()
 
-      if (!candidate) continue;
+    );
 
-      foundIndex = headerRow.findIndex(header => header && header.trim() === candidate.trim());
+    
 
-      if (foundIndex !== -1) break;
+    // 見つからない場合、大文字小文字を区別せずに検索
 
-      const loweredCandidate = candidate.trim().toLowerCase();
+    if (index === -1) {
 
-      foundIndex = headerRow.findIndex(header => header && header.trim().toLowerCase() === loweredCandidate);
+      index = headerRow.findIndex(header => 
 
-      if (foundIndex !== -1) break;
+        header && header.trim().toLowerCase() === targetTitle.trim().toLowerCase()
+
+      );
 
     }
 
-    if (foundIndex !== -1) {
+    
 
-      Logger.log(`✓ [${idx}] "${targetTitle}" → CSV列${foundIndex + 1} (${headerRow[foundIndex]})`);
+    // ログ出力
+
+    if (index !== -1) {
+
+      Logger.log(`✓ [${idx}] "${targetTitle}" → CSV列${index+1} (${headerRow[index]})`);
 
     } else {
 
-      Logger.log(`✗ [${idx}] "${targetTitle}" → 見つかりませんでした (候補: ${candidates.join(', ')})`);
+      Logger.log(`✗ [${idx}] "${targetTitle}" → 見つかりませんでした`);
 
     }
 
-    return foundIndex;
+    
+
+    return index;
 
   });
 
@@ -3055,14 +2976,19 @@ function analyzeData() {
   
 
   // 列のインデックスを取得（0始まり - SHEET_HEADER_TITLESの順序に対応）
+  // 注意: 画像表示列が追加されたため、インデックスが1つずつシフト
 
-  const colContentTitle = 1;       // テキスト
+  const colImage = 0;              // Image (Image URL)
 
-  const colCTR = 6;                // CTR
+  const colImagePreview = 1;       // 画像表示 (IMAGE関数)
 
-  const colCPC = 4;                // CPC
+  const colContentTitle = 3;       // Content Title
 
-  const colCPA = 9;                // CPA
+  const colCTR = 9;                // CTR (CTR)
+
+  const colCPC = 7;                // Avg. CPC (Avg. CPC)
+
+  const colCPA = 12;               // CPA(円) (CPA (Click))
 
   
 
@@ -3304,11 +3230,11 @@ function createKPIDiagnosisSheet(data) {
   // 列のインデックス
   // 注意: 画像表示列が追加されたため、インデックスが1つずつシフト
 
-  const colCTR = 6;  // 画像表示列追加により+1
+  const colCTR = 8;  // 画像表示列追加により+1
 
-  const colCPC = 4;  // 画像表示列追加により+1
+  const colCPC = 6;  // 画像表示列追加により+1
 
-  const colCPA = 9;  // 画像表示列追加により+1
+  const colCPA = 11; // 画像表示列追加により+1
 
   
 
@@ -3701,14 +3627,15 @@ function createSummarySheet(data) {
   
 
   // 列のインデックス（SHEET_HEADER_TITLESの順序に対応）
+  // 注意: 画像表示列が追加されたため、インデックスが1つずつシフト
 
-  const colAmountSpent = 2;      // 配信金額
+  const colAmountSpent = 5;      // 配信金額 (Amount Spent)
 
-  const colImpressions = 3;      // Imp
+  const colImpressions = 6;      // Impressions (Impressions)
 
-  const colClicks = 5;           // Clicks
+  const colClicks = 8;           // Clicks (Clicks)
 
-  const colConversions = 7;      // CV
+  const colConversions = 10;     // Conversions (Click) (Conversions (Click))
 
   
 
@@ -3965,3 +3892,4 @@ function sendErrorNotification(error) {
   }
 
 }
+
