@@ -1,0 +1,3880 @@
+/**
+
+
+
+ * 広告運用データ自動分析システム
+
+ * 
+
+ * CSVファイルを自動でスプレッドシートに取り込み、
+
+ * CPA、CTR、CPCの閾値を超えた場合にChatworkに通知します
+
+ * 
+
+ * 【列のマッピング】
+
+ * インデックス | CSV列名                    | スプレッドシート列名
+
+ * ------------|---------------------------|--------------------
+
+ * 0           | Image                     | Image
+
+ * 1           | Content Title             | Content Title
+
+ * 2           | ID                        | ID
+
+ * 3           | Amount Spent              | 配信金額
+
+ * 4           | Impressions               | Impressions
+
+ * 5           | Avg. CPC                  | Avg. CPC
+
+ * 6           | Clicks                    | Clicks
+
+ * 7           | CTR                       | CTR
+
+ * 8           | Conversions (Click)       | Conversions (Click)
+
+ * 9           | Conversion Rate (Click)   | Conversion Rate
+
+ * 10          | CPA (Click)               | CPA(円)
+
+ */
+
+// Chatwork APIトークンとルームIDの設定
+
+const CHATWORK_API_TOKEN = PropertiesService.getScriptProperties().getProperty('CHATWORK_API_TOKEN');
+
+const CHATWORK_ROOM_ID = PropertiesService.getScriptProperties().getProperty('CHATWORK_ROOM_ID');
+
+const CSV_FOLDER_ID = PropertiesService.getScriptProperties().getProperty('CSV_FOLDER_ID') || '1077Nlpr7Zgm7U0N-PeBB-k1Hhw4Xczoq';
+
+// KPI基準値の設定（広告KPI表に基づく）
+
+const KPI_STANDARDS = {
+
+  CTR: {
+
+    healthy: { min: 1.0, color: '#00FF00', label: '健康' },      // 緑：1.0%以上
+
+    warning: { min: 0.4, max: 0.99, color: '#FFFF00', label: '要注意' },  // 黄色：0.4～0.9%
+
+    danger: { max: 0.3, color: '#FF0000', label: 'レッドライン' }          // 赤：0.3%以下
+
+  },
+
+  CPC: {
+
+    healthy: { max: 90, color: '#00FF00', label: '健康' },       // 緑：～¥90
+
+    warning: { min: 91, max: 129, color: '#FFFF00', label: '要注意' },    // 黄色：¥91～¥129
+
+    danger: { min: 130, color: '#FF0000', label: 'レッドライン' }          // 赤：¥130以上
+
+  },
+
+  CPA: {
+
+    healthy: { max: 3000, color: '#00FF00', label: '健康' },     // 緑：～¥3,000
+
+    warning: { min: 3001, max: 7499, color: '#FFFF00', label: '要注意' }, // 黄色：¥3,001～¥7,499
+
+    danger: { min: 7500, color: '#FF0000', label: 'レッドライン' }         // 赤：¥7,500以上
+
+  }
+
+};
+
+// 改善アクション
+
+const IMPROVEMENT_ACTIONS = {
+
+  CTR: {
+
+    healthy: '興味を強く引けている。訴求軸を拡張してスケール配信。',
+
+    warning: '反応が鈍化。ビジュアル or コピーが弱い可能性。CTA・ターゲティング・訴求をテスト。',
+
+    danger: '興味喚起できず。広告がスルーされている。訴求・構成を全面リフレッシュ。'
+
+  },
+
+  CPC: {
+
+    healthy: '効率的な配信。コスパ良好。効果的な広告セットを拡大。',
+
+    warning: '精度低下または競合増加。年齢・興味・時間帯を見直し。',
+
+    danger: '無駄クリック多発で非効率。訴求角度・入札戦略を再構築。'
+
+  },
+
+  CPA: {
+
+    healthy: '利益モデル成立ライン。LPと広告の整合性を維持。',
+
+    warning: 'ギリ成立。LTV依存度高。LP改善・信頼要素追加。',
+
+    danger: '広告費回収不能ライン。オファーとLPを再設計。'
+
+  }
+
+};
+
+// 取得したいCSV列のタイトル名
+
+const CSV_COLUMN_TITLES = [
+
+  'Image',                      // 0 - 画像
+
+  'Content Title',              // 1 - コンテンツタイトル
+
+  'ID',                         // 2 - ID
+
+  'Amount Spent',               // 3 - 使用金額
+
+  'Impressions',                // 4 - インプレッション数
+
+  'Avg. CPC',                   // 5 - 平均CPC
+
+  'Clicks',                     // 6 - クリック数
+
+  'CTR',                        // 7 - クリック率
+
+  'Conversions (Click)',        // 8 - コンバージョン数
+
+  'Conversion Rate (Click)',    // 9 - コンバージョン率
+
+  'CPA (Click)'                 // 10 - CPA
+
+];
+
+// スプレッドシートに表示するヘッダー名
+
+const SHEET_HEADER_TITLES = [
+
+  'Image',                      // 0 - 画像URL
+
+  '画像表示',                   // 1 - 画像表示（IMAGE関数）
+
+  'Content Title',              // 2 - コンテンツタイトル
+
+  'ID',                         // 3 - ID
+
+  '配信金額',                   // 4 - Amount Spent
+
+  'Impressions',                // 5 - Impressions
+
+  'Avg. CPC',                   // 6 - Avg. CPC
+
+  'Clicks',                     // 7 - Clicks
+
+  'CTR',                        // 8 - CTR
+
+  'Conversions (Click)',        // 9 - Conversions
+
+  'Conversion Rate',            // 10 - Conversion Rate
+
+  'CPA(円)'                     // 11 - CPA
+
+];
+
+/**
+
+ * スクリプトプロパティを設定するための初期設定関数
+
+ */
+
+function setupProperties() {
+
+  const ui = SpreadsheetApp.getUi();
+
+  
+
+  // Chatwork APIトークンの設定
+
+  const apiTokenResponse = ui.prompt(
+
+    'Chatwork APIトークンの設定',
+
+    'Chatwork APIトークンを入力してください:',
+
+    ui.ButtonSet.OK_CANCEL
+
+  );
+
+  
+
+  if (apiTokenResponse.getSelectedButton() == ui.Button.OK) {
+
+    PropertiesService.getScriptProperties().setProperty('CHATWORK_API_TOKEN', apiTokenResponse.getResponseText());
+
+  }
+
+  
+
+  // ChatworkルームIDの設定
+
+  const roomIdResponse = ui.prompt(
+
+    'ChatworkルームIDの設定',
+
+    'ChatworkルームIDを入力してください:',
+
+    ui.ButtonSet.OK_CANCEL
+
+  );
+
+  
+
+  if (roomIdResponse.getSelectedButton() == ui.Button.OK) {
+
+    PropertiesService.getScriptProperties().setProperty('CHATWORK_ROOM_ID', roomIdResponse.getResponseText());
+
+  }
+
+  
+
+  // CSVフォルダーIDの設定
+
+  const folderIdResponse = ui.prompt(
+
+    'CSVフォルダーIDの設定',
+
+    'CSVファイルを保存するGoogle DriveフォルダーのIDを入力してください:',
+
+    ui.ButtonSet.OK_CANCEL
+
+  );
+
+  
+
+  if (folderIdResponse.getSelectedButton() == ui.Button.OK) {
+
+    PropertiesService.getScriptProperties().setProperty('CSV_FOLDER_ID', folderIdResponse.getResponseText());
+
+  }
+
+  
+
+  ui.alert('設定が完了しました！');
+
+}
+
+/**
+ 
+ * 昨日のCSVを取り込み→分析（ファイル名に日付が含まれる想定）
+ 
+ * 優先パターン: yyyyMMdd / yyyy-MM-dd / yyyy_MM_dd をファイル名に含むCSV
+ 
+ */
+function importYesterdayCsvAndAnalyze() {
+ 
+  try {
+ 
+    if (!CSV_FOLDER_ID) {
+ 
+      Logger.log('CSVフォルダーIDが設定されていません');
+ 
+      return;
+ 
+    }
+ 
+    
+ 
+    const folder = DriveApp.getFolderById(CSV_FOLDER_ID);
+ 
+    const files = folder.getFilesByType(MimeType.CSV);
+ 
+    const { ymd, y_m_d, y_m_d_underscore } = getYesterdayDateStrings_();
+ 
+    
+ 
+    const candidates = [];
+ 
+    while (files.hasNext()) {
+ 
+      const f = files.next();
+ 
+      const name = f.getName();
+ 
+      if (name.includes(ymd) || name.includes(y_m_d) || name.includes(y_m_d_underscore)) {
+ 
+        candidates.push(f);
+ 
+      }
+ 
+    }
+ 
+    
+ 
+    if (candidates.length === 0) {
+ 
+      Logger.log('昨日の日付に一致するCSVが見つかりませんでした');
+ 
+      return;
+ 
+    }
+ 
+    
+ 
+    // 最終更新が最新のものを採用
+ 
+    const targetFile = candidates.sort((a, b) => b.getLastUpdated() - a.getLastUpdated())[0];
+ 
+    Logger.log('昨日のCSVとして取り込むファイル: ' + targetFile.getName());
+ 
+    
+ 
+    // 既に処理済みかを確認
+ 
+    const processed = getProcessedFiles();
+ 
+    if (processed.includes(targetFile.getId())) {
+ 
+      Logger.log('既に処理済みのためスキップ: ' + targetFile.getName());
+ 
+      return;
+ 
+    }
+ 
+    
+ 
+    importCSVToSheet(targetFile);
+ 
+    markFileAsProcessed(targetFile.getId(), targetFile.getName());
+ 
+    analyzeData();
+ 
+  } catch (error) {
+ 
+    Logger.log('昨日CSV取り込み処理でエラー: ' + error.toString());
+ 
+    sendErrorNotification(error);
+ 
+  }
+ 
+}
+ 
+/**
+ 
+ * 日次（指定時刻 JST）で昨日CSV→分析を実行するトリガーを設定
+ 
+ * 既存の時限トリガーは残し、同名のもののみ重複作成を回避
+ 
+ */
+function setupDailyYesterdayTrigger(hourJst) {
+ 
+  // デフォルト 7時(JST)
+ 
+  const hour = typeof hourJst === 'number' && hourJst >= 0 && hourJst <= 23 ? hourJst : 7;
+ 
+  
+ 
+  // 既存で同じハンドラのトリガーを削除して重複回避
+ 
+  const triggers = ScriptApp.getProjectTriggers();
+ 
+  triggers.forEach(t => {
+ 
+    if (t.getHandlerFunction && t.getHandlerFunction() === 'runDailyYesterdayJob') {
+ 
+      ScriptApp.deleteTrigger(t);
+ 
+    }
+ 
+  });
+ 
+  
+ 
+  ScriptApp.newTrigger('runDailyYesterdayJob')
+ 
+    .timeBased()
+ 
+    .atHour(hour)       // JST基準で実行
+ 
+    .everyDays(1)
+ 
+    .create();
+ 
+  
+ 
+  const ui = SpreadsheetApp.getUi && SpreadsheetApp.getUi();
+ 
+  if (ui) {
+ 
+    ui.alert(`日次トリガーを設定しました（毎日 ${hour}:00 JST に実行）`);
+ 
+  }
+ 
+}
+ 
+/**
+ 
+ * トリガー実行関数（昨日のCSV→分析）
+ 
+ */
+function runDailyYesterdayJob() {
+ 
+  importYesterdayCsvAndAnalyze();
+ 
+}
+ 
+/**
+ 
+ * 昨日の日付文字列（JST）を複数フォーマットで返す
+ 
+ */
+function getYesterdayDateStrings_() {
+ 
+  const tz = 'JST';
+ 
+  const now = new Date();
+ 
+  // JSTの昨日に調整
+ 
+  const jstNowStr = Utilities.formatDate(now, tz, "yyyy/MM/dd HH:mm:ss");
+ 
+  const jstNow = new Date(jstNowStr);
+ 
+  const yesterday = new Date(jstNow.getTime() - 24 * 60 * 60 * 1000);
+ 
+  
+ 
+  const ymd = Utilities.formatDate(yesterday, tz, "yyyyMMdd");
+ 
+  const y_m_d = Utilities.formatDate(yesterday, tz, "yyyy-MM-dd");
+ 
+  const y_m_d_underscore = Utilities.formatDate(yesterday, tz, "yyyy_MM_dd");
+ 
+  return { ymd, y_m_d, y_m_d_underscore };
+ 
+}
+ 
+function collectPeriodData_() {
+
+  const configs = [
+
+    {
+
+      label: '前日',
+
+      fileNames: [
+
+        'CR前日.CSV', 'CR前日.csv',
+
+        'CR別前日.CSV', 'CR別前日.csv',
+
+        'CR前日データ.CSV', 'CR前日データ.csv'
+
+      ]
+
+    },
+
+    {
+
+      label: '直近3日間',
+
+      fileNames: [
+
+        'CR直近3日間.CSV', 'CR直近3日間.csv',
+
+        'CR直近３日間.CSV', 'CR直近３日間.csv',
+
+        'CR直近三日間.CSV', 'CR直近三日間.csv'
+
+      ]
+
+    },
+
+    {
+
+      label: '1カ月前',
+
+      fileNames: [
+
+        'CR１カ月前.CSV', 'CR１カ月前.csv',
+
+        'CR1カ月前.CSV', 'CR1カ月前.csv',
+
+        'CR1ヶ月前.CSV', 'CR1ヶ月前.csv',
+
+        'CR１ヶ月前.CSV', 'CR１ヶ月前.csv'
+
+      ]
+
+    }
+
+  ];
+
+
+  const summaries = [];
+
+  const rawBlocks = [];
+
+
+  configs.forEach(config => {
+
+    const csvData = loadCsvDataByNames_(config.fileNames);
+
+    if (!csvData) {
+
+      const fileNamesText = Array.isArray(config.fileNames) ? config.fileNames.join(', ') : '不明';
+
+      summaries.push({
+
+        label: config.label,
+
+        error: 'ファイルが見つかりませんでした: ' + fileNamesText
+
+      });
+
+      rawBlocks.push({
+
+        label: config.label,
+
+        error: 'ファイルが見つかりませんでした'
+
+      });
+
+      return;
+
+    }
+
+
+    rawBlocks.push({
+
+      label: config.label,
+
+      data: csvData
+
+    });
+
+
+    const metrics = computeSummaryMetrics_(csvData);
+
+    if (!metrics) {
+
+      const fileNamesText = Array.isArray(config.fileNames) ? config.fileNames.join(', ') : '不明';
+
+      summaries.push({
+
+        label: config.label,
+
+        error: '有効なデータがありません: ' + fileNamesText
+
+      });
+
+      return;
+
+    }
+
+
+    summaries.push({
+
+      label: config.label,
+
+      ...metrics
+
+    });
+
+  });
+
+
+  return { summaries, rawBlocks };
+
+}
+
+/**
+
+ * 指定3期間（前日・直近3日間・1カ月前）のCSVを集計して表を作成
+
+ */
+function generatePeriodSummaries() {
+
+  try {
+
+    const { summaries, rawBlocks } = collectPeriodData_();
+
+    renderPeriodSummarySheet_(summaries);
+    renderPeriodRawDataSheet_(rawBlocks);
+    renderAdDataSheetFromRawBlocks_(rawBlocks);
+ 
+  } catch (error) {
+ 
+    Logger.log('期間別サマリー生成でエラー: ' + error.toString());
+ 
+    sendErrorNotification(error);
+ 
+    throw error;
+ 
+  }
+ 
+}
+
+function refreshAdDataFromPeriodCsvs() {
+
+  try {
+
+    const { rawBlocks } = collectPeriodData_();
+
+    renderAdDataSheetFromRawBlocks_(rawBlocks);
+
+  } catch (error) {
+
+    Logger.log('広告データ再構築でエラー: ' + error.toString());
+
+    sendErrorNotification(error);
+
+    throw error;
+
+  }
+
+}
+ 
+function loadCsvDataByNames_(fileNames) {
+ 
+  if (!CSV_FOLDER_ID) {
+ 
+    Logger.log('CSVフォルダーIDが設定されていません');
+ 
+    return null;
+ 
+  }
+ 
+  const candidates = Array.isArray(fileNames) ? fileNames : [fileNames];
+ 
+  
+ 
+  try {
+ 
+    const folder = DriveApp.getFolderById(CSV_FOLDER_ID);
+ 
+    for (const fileName of candidates) {
+
+      const iterator = folder.getFilesByName(fileName);
+ 
+      const files = [];
+ 
+      while (iterator.hasNext()) {
+ 
+        files.push(iterator.next());
+
+      }
+ 
+      if (files.length === 0) {
+
+        Logger.log(`候補ファイルが見つかりませんでした: ${fileName}`);
+
+        continue;
+
+      }
+ 
+      const targetFile = files.sort((a, b) => b.getLastUpdated() - a.getLastUpdated())[0];
+
+      Logger.log(`読み込み対象ファイル: ${targetFile.getName()}`);
+
+      const csvContent = targetFile.getBlob().getDataAsString('UTF-8');
+
+      if (!csvContent || csvContent.trim() === '') {
+
+        Logger.log('CSVファイルが空です: ' + fileName);
+
+        continue;
+
+      }
+ 
+      const csvData = Utilities.parseCsv(csvContent);
+
+      if (!csvData || csvData.length === 0) {
+
+        Logger.log('CSVファイルにデータがありません: ' + fileName);
+
+        continue;
+
+      }
+ 
+      return csvData;
+
+    }
+ 
+  } catch (error) {
+ 
+    Logger.log('CSV読み込み失敗: ' + error.toString());
+ 
+    throw error;
+ 
+  }
+ 
+}
+ 
+function transformCsvDataToAdRows_(csvData, contextLabel) {
+
+  if (!csvData || csvData.length === 0) {
+
+    return [];
+
+  }
+
+  
+
+  const label = contextLabel ? `[${contextLabel}] ` : '';
+
+  const headerRow = csvData[0];
+
+  if (!headerRow || headerRow.length === 0 || headerRow.join('').trim() === '') {
+
+    throw new Error(`${label}CSVのヘッダー行が空です`);
+
+  }
+
+  
+
+  const columnIndices = findColumnIndices(headerRow, CSV_COLUMN_TITLES);
+
+  const notFoundColumns = CSV_COLUMN_TITLES.filter((title, index) => columnIndices[index] === -1);
+
+  if (notFoundColumns.length > 0) {
+
+    Logger.log(`${label}警告: 以下の列が見つかりませんでした: ${notFoundColumns.join(', ')}`);
+
+  }
+
+  
+
+  const rowsToInsert = [];
+
+  for (let i = 1; i < csvData.length; i++) {
+
+    const row = csvData[i];
+
+    if (!row || row.length === 0) {
+
+      continue;
+
+    }
+
+    
+
+    const rowContent = row.join('').trim();
+
+    if (rowContent === '') {
+
+      continue;
+
+    }
+
+    
+
+    const extractedData = columnIndices.map(colIndex => {
+
+      if (colIndex !== -1 && colIndex < row.length) {
+
+        const value = row[colIndex];
+
+        return value !== null && value !== undefined ? String(value).trim() : '';
+
+      }
+
+      return '';
+
+    });
+
+    
+
+    const hasValidData = extractedData.some(cell => cell !== '');
+
+    if (hasValidData && extractedData.length > 0) {
+
+      const dataWithImage = [
+
+        extractedData[0],
+
+        '',
+
+        ...extractedData.slice(1)
+
+      ];
+
+      
+
+      const amountSpentIndex = 4;
+
+      const amountSpentValue = dataWithImage[amountSpentIndex];
+
+      const amountSpent = cleanNumericValue(amountSpentValue);
+
+      
+
+      if (amountSpent === null || amountSpent === undefined || amountSpent !== 0) {
+
+        rowsToInsert.push(dataWithImage);
+
+      } else {
+
+        Logger.log(`${label}配信金額が0のため、行をスキップしました: ${dataWithImage[2]} (ID: ${dataWithImage[3]})`);
+
+      }
+
+    }
+
+  }
+
+  
+
+  return rowsToInsert;
+
+}
+
+function computeSummaryMetrics_(csvData) {
+ 
+  if (!csvData || csvData.length <= 1) {
+ 
+    return null;
+ 
+  }
+ 
+  
+ 
+  const headerRow = csvData[0];
+ 
+  const columnIndices = findColumnIndices(headerRow, CSV_COLUMN_TITLES);
+ 
+  const idxAmount = columnIndices[CSV_COLUMN_TITLES.indexOf('Amount Spent')];
+ 
+  const idxImpressions = columnIndices[CSV_COLUMN_TITLES.indexOf('Impressions')];
+ 
+  const idxClicks = columnIndices[CSV_COLUMN_TITLES.indexOf('Clicks')];
+ 
+  const idxConversions = columnIndices[CSV_COLUMN_TITLES.indexOf('Conversions (Click)')];
+ 
+  
+ 
+  if ([idxAmount, idxImpressions, idxClicks, idxConversions].some(idx => idx === -1)) {
+ 
+    Logger.log('必要な列が見つかりませんでした');
+ 
+    return null;
+ 
+  }
+ 
+  
+ 
+  let totalCost = 0;
+ 
+  let totalImpressions = 0;
+ 
+  let totalClicks = 0;
+ 
+  let totalConversions = 0;
+ 
+  let rowCount = 0;
+ 
+  
+ 
+  for (let i = 1; i < csvData.length; i++) {
+ 
+    const row = csvData[i];
+ 
+    if (!row || row.join('').trim() === '') {
+ 
+      continue;
+ 
+    }
+ 
+    
+ 
+    const cost = cleanNumericValue(row[idxAmount]) || 0;
+ 
+    const impressions = cleanNumericValue(row[idxImpressions]) || 0;
+ 
+    const clicks = cleanNumericValue(row[idxClicks]) || 0;
+ 
+    const conversions = cleanNumericValue(row[idxConversions]) || 0;
+ 
+    
+ 
+    totalCost += cost;
+ 
+    totalImpressions += impressions;
+ 
+    totalClicks += clicks;
+ 
+    totalConversions += conversions;
+ 
+    rowCount++;
+ 
+  }
+ 
+  
+ 
+  if (rowCount === 0) {
+ 
+    return null;
+ 
+  }
+ 
+  
+ 
+  const avgCTR = totalImpressions > 0 ? (totalClicks / totalImpressions * 100) : 0;
+ 
+  const avgCPC = totalClicks > 0 ? (totalCost / totalClicks) : 0;
+ 
+  const avgCPA = totalConversions > 0 ? (totalCost / totalConversions) : 0;
+ 
+  
+ 
+  return {
+ 
+    totalRows: rowCount,
+ 
+    totalClicks,
+ 
+    totalImpressions,
+ 
+    totalCost,
+ 
+    totalConversions,
+ 
+    avgCTR,
+ 
+    avgCPC,
+ 
+    avgCPA
+ 
+  };
+ 
+}
+ 
+function renderPeriodSummarySheet_(summaries) {
+ 
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+ 
+  let sheet = ss.getSheetByName('期間別サマリー');
+ 
+  if (!sheet) {
+ 
+    sheet = ss.insertSheet('期間別サマリー');
+ 
+  } else {
+ 
+    sheet.clear();
+ 
+  }
+ 
+  
+ 
+  let currentRow = 1;
+ 
+  summaries.forEach((summary, index) => {
+
+    const titleRange = sheet.getRange(currentRow, 1, 1, 3);
+
+    titleRange.merge();
+
+    titleRange.setValue(`■ ${summary.label}`);
+
+    titleRange.setFontWeight('bold').setFontSize(12).setBackground('#D9E1F2');
+
+    currentRow += 1;
+
+    const headerRange = sheet.getRange(currentRow, 1, 1, 3);
+
+    headerRange.setValues([['項目', '値', '備考']]);
+
+    headerRange.setBackground('#4A86E8').setFontColor('#FFFFFF').setFontWeight('bold').setHorizontalAlignment('center');
+
+    currentRow += 1;
+
+    if (summary.error) {
+
+      sheet.getRange(currentRow, 1, 1, 3).setValues([[ 'データ取得', '-', summary.error ]]);
+
+      currentRow += 1;
+
+    } else {
+
+      const rows = [
+
+        ['総広告数', formatNumber_(summary.totalRows), ''],
+
+        ['総クリック数', formatNumber_(summary.totalClicks), ''],
+
+        ['総インプレッション数', formatNumber_(summary.totalImpressions), ''],
+
+        ['総コスト', formatCurrency_(summary.totalCost), ''],
+
+        ['総コンバージョン数', formatNumber_(summary.totalConversions), ''],
+
+        ['平均CTR', formatPercent_(summary.avgCTR), ''],
+
+        ['平均CPC', formatCurrency_(summary.avgCPC), ''],
+
+        ['平均CPA', formatCurrency_(summary.avgCPA), '']
+
+      ];
+
+      sheet.getRange(currentRow, 1, rows.length, 3).setValues(rows);
+
+      currentRow += rows.length;
+
+    }
+
+    if (index < summaries.length - 1) {
+
+      currentRow += 1;
+
+    }
+
+  });
+ 
+  sheet.autoResizeColumns(1, 3);
+ 
+}
+
+function renderPeriodRawDataSheet_(rawBlocks) {
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  let sheet = ss.getSheetByName('期間別データ');
+
+  if (!sheet) {
+
+    sheet = ss.insertSheet('期間別データ');
+
+  } else {
+
+    sheet.clear();
+
+  }
+
+
+  let currentRow = 1;
+
+  rawBlocks.forEach(block => {
+
+    const titleRange = sheet.getRange(currentRow, 1, 1, 1);
+
+    titleRange.setValue(`■ ${block.label}`);
+
+    titleRange.setFontWeight('bold').setFontSize(12).setBackground('#D9E1F2');
+
+    currentRow += 1;
+
+
+    if (block.error) {
+
+      sheet.getRange(currentRow, 1).setValue(block.error);
+
+      currentRow += 2;
+
+      return;
+
+    }
+
+
+    const data = block.data;
+
+    if (data && data.length > 0) {
+
+      const rowCount = data.length;
+
+      const columnCount = data[0].length;
+
+      sheet.getRange(currentRow, 1, rowCount, columnCount).setValues(data);
+
+      currentRow += rowCount + 1;
+
+    } else {
+
+      sheet.getRange(currentRow, 1).setValue('データがありません');
+
+      currentRow += 2;
+
+    }
+
+  });
+
+
+  const maxColumns = sheet.getMaxColumns();
+
+  if (maxColumns > 0) {
+
+    sheet.autoResizeColumns(1, maxColumns);
+
+  }
+
+}
+ 
+function renderAdDataSheetFromRawBlocks_(rawBlocks) {
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  let dataSheet = ss.getSheetByName('広告データ');
+
+  if (!dataSheet) {
+
+    dataSheet = ss.insertSheet('広告データ');
+
+    if (SHEET_HEADER_TITLES && SHEET_HEADER_TITLES.length > 0) {
+
+      dataSheet.appendRow(SHEET_HEADER_TITLES);
+
+    } else {
+
+      throw new Error('ヘッダータイトルが設定されていません');
+
+    }
+
+    
+
+    const headerRange = dataSheet.getRange(1, 1, 1, SHEET_HEADER_TITLES.length);
+
+    headerRange.setBackground('#4A86E8');
+
+    headerRange.setFontColor('#FFFFFF');
+
+    headerRange.setFontWeight('bold');
+
+    headerRange.setHorizontalAlignment('center');
+
+  } else {
+
+    const currentHeaders = dataSheet.getRange(1, 1, 1, SHEET_HEADER_TITLES.length).getValues()[0];
+
+    const headersMatch = currentHeaders.every((header, index) => header === SHEET_HEADER_TITLES[index]);
+
+    if (!headersMatch) {
+
+      dataSheet.getRange(1, 1, 1, SHEET_HEADER_TITLES.length).setValues([SHEET_HEADER_TITLES]);
+
+    }
+
+    
+
+    const lastRow = dataSheet.getLastRow();
+
+    if (lastRow > 1) {
+
+      dataSheet.getRange(2, 1, lastRow - 1, dataSheet.getLastColumn()).clearContent();
+
+      dataSheet.getRange(2, 1, lastRow - 1, dataSheet.getLastColumn()).setBackground(null);
+
+    }
+
+  }
+
+  
+
+  if (!rawBlocks || rawBlocks.length === 0) {
+
+    Logger.log('期間別データが存在しないため、広告データシートを更新できませんでした');
+
+    return;
+
+  }
+
+  
+
+  const allRows = [];
+
+  rawBlocks.forEach(block => {
+
+    if (block && block.data) {
+
+      try {
+
+        const rows = transformCsvDataToAdRows_(block.data, block.label);
+
+        if (rows && rows.length > 0) {
+
+          allRows.push(...rows);
+
+        }
+
+      } catch (error) {
+
+        Logger.log(`[${block.label}] データ変換に失敗: ` + error.toString());
+
+      }
+
+    }
+
+  });
+
+  
+
+  if (allRows.length > 0) {
+
+    const targetRange = dataSheet.getRange(2, 1, allRows.length, SHEET_HEADER_TITLES.length);
+
+    targetRange.setValues(allRows);
+
+    
+
+    const imageFormulas = allRows.map((row, index) => {
+
+      const imageUrl = row[0] || '';
+
+      if (imageUrl && imageUrl.trim() !== '') {
+
+        const rowNum = 2 + index;
+
+        return [`=IF(A${rowNum}<>"", IMAGE(A${rowNum}, 1), "")`];
+
+      }
+
+      return [''];
+
+    });
+
+    dataSheet.getRange(2, 2, allRows.length, 1).setFormulas(imageFormulas);
+
+  } else {
+
+    Logger.log('変換後のデータが空のため、広告データシートに書き込みませんでした');
+
+  }
+
+  
+
+  for (let i = 1; i <= SHEET_HEADER_TITLES.length; i++) {
+
+    dataSheet.autoResizeColumn(i);
+
+  }
+
+  // A/B列の幅を設定
+  dataSheet.setColumnWidth(1, 50);
+  dataSheet.setColumnWidth(2, 120);
+
+}
+
+function formatNumber_(value) {
+ 
+  return Number(value || 0).toLocaleString();
+ 
+}
+ 
+function formatCurrency_(value) {
+ 
+  return '¥' + Number(value || 0).toLocaleString();
+ 
+}
+ 
+function formatPercent_(value) {
+ 
+  return Number(value || 0).toFixed(2) + '%';
+ 
+}
+ 
+// メニューに日次関連項目を追加（既存メニューに追記）
+// 既存 onOpen に追記するため、ラッパーでメニュー項目を再追加（onOpen 自体は既存定義のため上書きせず）
+function onOpen_addDailyMenu_() {
+ 
+  const ui = SpreadsheetApp.getUi();
+ 
+  ui.createMenu('日次オペレーション')
+ 
+    .addItem('昨日のCSVを取り込み→分析', 'importYesterdayCsvAndAnalyze')
+ 
+    .addItem('日次トリガーを設定（07:00 JST）', 'setupDailyYesterdayTrigger')
+
+    .addItem('期間別サマリーを更新', 'generatePeriodSummaries')
+
+    .addItem('広告データを更新（期間CSV）', 'refreshAdDataFromPeriodCsvs')
+ 
+    .addToUi();
+ 
+}
+ 
+// スプレッドシートを開いたタイミングでメニュー追加を確実に呼ぶためのトリガー
+function onOpen_e2eDailyMenuInit_() {
+ 
+  try {
+ 
+    onOpen_addDailyMenu_();
+ 
+  } catch (e) {
+ 
+    Logger.log('日次メニュー追加に失敗: ' + e.toString());
+ 
+  }
+ 
+}
+
+/**
+
+ * カスタムメニューを追加
+
+ */
+
+function onOpen() {
+
+  const ui = SpreadsheetApp.getUi();
+
+  ui.createMenu('広告運用DX')
+
+    .addItem('初期設定', 'setupProperties')
+
+    .addItem('CSVファイルを手動取り込み', 'manualImportCSV')
+
+    .addItem('データ分析を実行', 'analyzeData')
+
+    .addItem('週次レポートを生成', 'generateWeeklyReport')
+
+    .addSeparator()
+
+    .addItem('トリガーを設定', 'setupTriggers')
+
+    .addItem('トリガーを削除', 'deleteTriggers')
+
+    .addSeparator()
+
+    .addItem('🔍 デバッグ: データ確認', 'debugCheckData')
+
+    .addItem('🔧 ヘッダーを修正', 'fixHeaders')
+
+    .addSeparator()
+
+    .addItem('昨日のCSVを取り込み→分析', 'importYesterdayCsvAndAnalyze')
+
+    .addItem('日次トリガーを設定（07:00 JST）', 'setupDailyYesterdayTrigger')
+
+    .addItem('期間別サマリーを更新', 'generatePeriodSummaries')
+
+    .addItem('広告データを更新（期間CSV）', 'refreshAdDataFromPeriodCsvs')
+
+    .addToUi();
+
+}
+
+/**
+
+ * デバッグ: 現在のデータを確認
+
+ */
+
+function debugCheckData() {
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  const dataSheet = ss.getSheetByName('広告データ');
+
+  
+
+  if (!dataSheet) {
+
+    SpreadsheetApp.getUi().alert('「広告データ」シートが見つかりません');
+
+    return;
+
+  }
+
+  
+
+  // ヘッダー行を取得
+
+  const headers = dataSheet.getRange(1, 1, 1, dataSheet.getLastColumn()).getValues()[0];
+
+  Logger.log('=== 現在のスプレッドシートヘッダー ===');
+
+  headers.forEach((header, index) => {
+
+    Logger.log(`列${index + 1} (${String.fromCharCode(65 + index)}): "${header}"`);
+
+  });
+
+  
+
+  // データの最初の3行を取得
+
+  if (dataSheet.getLastRow() > 1) {
+
+    const dataRows = Math.min(3, dataSheet.getLastRow() - 1);
+
+    const data = dataSheet.getRange(2, 1, dataRows, dataSheet.getLastColumn()).getValues();
+
+    
+
+    Logger.log('\n=== データサンプル（最初の3行） ===');
+
+    data.forEach((row, rowIndex) => {
+
+      Logger.log(`\n行${rowIndex + 2}:`);
+
+      row.forEach((cell, colIndex) => {
+
+        if (cell !== '') {
+
+          Logger.log(`  ${headers[colIndex]}: "${cell}" (型: ${typeof cell})`);
+
+        }
+
+      });
+
+    });
+
+  }
+
+  
+
+  // 期待されるヘッダーとの比較
+
+  Logger.log('\n=== 期待されるヘッダーとの比較 ===');
+
+  SHEET_HEADER_TITLES.forEach((expected, index) => {
+
+    const actual = headers[index] || '(なし)';
+
+    const match = actual === expected ? '✓' : '✗';
+
+    Logger.log(`${match} [${index}] 期待: "${expected}" / 実際: "${actual}"`);
+
+  });
+
+  
+
+  SpreadsheetApp.getUi().alert('デバッグ情報をログに出力しました。\n\n「拡張機能」→「Apps Script」→「実行数」で確認してください。');
+
+}
+
+/**
+
+ * ヘッダーを正しい形式に修正
+
+ */
+
+function fixHeaders() {
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  const dataSheet = ss.getSheetByName('広告データ');
+
+  
+
+  if (!dataSheet) {
+
+    SpreadsheetApp.getUi().alert('「広告データ」シートが見つかりません');
+
+    return;
+
+  }
+
+  
+
+  // 現在の列数を確認
+  const currentColumns = dataSheet.getLastColumn();
+  const expectedColumns = SHEET_HEADER_TITLES.length;
+  
+  // 画像表示列が存在しない場合（列Bが「画像表示」でない場合）、列を挿入
+  const currentHeaders = dataSheet.getRange(1, 1, 1, Math.max(currentColumns, expectedColumns)).getValues()[0];
+  const needsImageColumn = currentHeaders[1] !== '画像表示';
+  
+  if (needsImageColumn && currentColumns >= 1) {
+    // 列B（インデックス2）に新しい列を挿入
+    dataSheet.insertColumnBefore(2);
+    Logger.log('画像表示列を追加しました');
+  }
+  
+  // ヘッダーを設定
+  dataSheet.getRange(1, 1, 1, SHEET_HEADER_TITLES.length).setValues([SHEET_HEADER_TITLES]);
+
+  
+
+  // フォーマットを適用
+
+  const headerRange = dataSheet.getRange(1, 1, 1, SHEET_HEADER_TITLES.length);
+
+  headerRange.setBackground('#4A86E8');
+
+  headerRange.setFontColor('#FFFFFF');
+
+  headerRange.setFontWeight('bold');
+
+  headerRange.setHorizontalAlignment('center');
+
+  
+  // 既存データがある場合、画像表示列にIMAGE関数の式を設定
+  const lastRow = dataSheet.getLastRow();
+  if (lastRow > 1) {
+    const imageColumnRange = dataSheet.getRange(2, 2, lastRow - 1, 1);
+    const formulas = [];
+    for (let i = 2; i <= lastRow; i++) {
+      formulas.push([`=IF(A${i}<>"", IMAGE(A${i}, 1), "")`]);
+    }
+    imageColumnRange.setFormulas(formulas);
+    Logger.log('既存データの画像表示列を更新しました');
+  }
+  
+  // 画像表示列（列B）の幅を適切なサイズに設定
+  dataSheet.setColumnWidth(2, 120);
+
+  // 余分な列を削除（期待される列数より多い場合）
+
+  const finalColumns = dataSheet.getLastColumn();
+
+  if (finalColumns > SHEET_HEADER_TITLES.length) {
+
+    dataSheet.deleteColumns(SHEET_HEADER_TITLES.length + 1, finalColumns - SHEET_HEADER_TITLES.length);
+
+  }
+
+  
+
+  SpreadsheetApp.getUi().alert(`ヘッダーを修正しました！\n\n${SHEET_HEADER_TITLES.length}列に設定しました。\n画像表示列も追加しました。`);
+
+}
+
+/**
+
+ * 定期実行用のトリガーを設定
+
+ */
+
+function setupTriggers() {
+
+  // 既存のトリガーを削除
+
+  deleteTriggers();
+
+  
+
+  // 1時間ごとにCSVファイルをチェック
+
+  ScriptApp.newTrigger('checkNewCSVFiles')
+
+    .timeBased()
+
+    .everyHours(1)
+
+    .create();
+
+  
+
+  SpreadsheetApp.getUi().alert('トリガーを設定しました。1時間ごとにCSVファイルをチェックします。');
+
+}
+
+/**
+
+ * トリガーを削除
+
+ */
+
+function deleteTriggers() {
+
+  const triggers = ScriptApp.getProjectTriggers();
+
+  triggers.forEach(trigger => ScriptApp.deleteTrigger(trigger));
+
+}
+
+/**
+
+ * 新しいCSVファイルをチェックして取り込み
+
+ */
+
+function checkNewCSVFiles() {
+
+  try {
+
+    if (!CSV_FOLDER_ID) {
+
+      Logger.log('CSVフォルダーIDが設定されていません');
+
+      return;
+
+    }
+
+    
+
+    const folder = DriveApp.getFolderById(CSV_FOLDER_ID);
+
+    const files = folder.getFilesByType(MimeType.CSV);
+
+    
+
+    // 処理済みファイルのリストを取得
+
+    const processedFiles = getProcessedFiles();
+
+    
+
+    let newFilesProcessed = false;
+
+    
+
+    while (files.hasNext()) {
+
+      const file = files.next();
+
+      const fileId = file.getId();
+
+      
+
+      // 未処理のファイルのみ処理
+
+      if (!processedFiles.includes(fileId)) {
+
+        Logger.log('新しいCSVファイルを検出: ' + file.getName());
+
+        importCSVToSheet(file);
+
+        markFileAsProcessed(fileId, file.getName());
+
+        newFilesProcessed = true;
+
+      }
+
+    }
+
+    
+
+    if (newFilesProcessed) {
+
+      // データ分析を実行
+
+      analyzeData();
+
+    }
+
+    
+
+  } catch (error) {
+
+    Logger.log('CSVファイルのチェック中にエラーが発生: ' + error.toString());
+
+    sendErrorNotification(error);
+
+  }
+
+}
+
+
+/**
+ * 週次レポート生成（CPN別進捗 / CR別進捗を週ごとに表示）
+ * CSVファイル名から「CPN別進捗」か「CR別進捗」を判断し、週の期間も抽出します。
+ */
+function generateWeeklyReport() {
+  try {
+    const fallbackId = '1QnBZuFKND26CYaX2Y79BjDTyyERKD-6F';
+    const folderIds = [];
+    if (CSV_FOLDER_ID) folderIds.push(CSV_FOLDER_ID);
+    if (!folderIds.includes(fallbackId)) folderIds.push(fallbackId);
+    
+    /** @type {{file:GoogleAppsScript.Drive.File, name:string, type:'CPN'|'CR', start:Date, end:Date}[]} */
+    const fileList = [];
+    /** @type {{file:GoogleAppsScript.Drive.File, name:string}[]} */
+    const monthlyFiles = [];
+    const allNames = [];
+    
+    folderIds.forEach(folderId => {
+      try {
+        const folder = DriveApp.getFolderById(folderId);
+        const files = folder.getFilesByType(MimeType.CSV);
+        while (files.hasNext()) {
+          const f = files.next();
+          const name = f.getName();
+          allNames.push(`${name} (folder:${folderId})`);
+          const monthMatch = name.match(/(\d{1,2})月.*\.csv$/i);
+          if (monthMatch) {
+            monthlyFiles.push({ file: f, name });
+            continue;
+          }
+          // ファイル名から「CPN別進捗」か「CR別進捗」を判断
+          const isCPN = /CPN別進捗/i.test(name);
+          const isCR = /CR別進捗/i.test(name);
+          if (!isCPN && !isCR) continue;
+          
+          const parsed = parseWeekFromFilename_(name);
+          if (parsed) {
+            fileList.push({
+              file: f,
+              name: name,
+              type: isCPN ? 'CPN' : 'CR',
+              start: parsed.start,
+              end: parsed.end
+            });
+          }
+        }
+      } catch (folderErr) {
+        Logger.log(`週次レポート: フォルダ取得に失敗 ${folderId}: ${folderErr}`);
+      }
+    });
+    
+    if (fileList.length === 0 && monthlyFiles.length === 0) {
+      const nameList = allNames.length > 0 ? '- ' + allNames.join('\n- ') : '(なし)';
+      SpreadsheetApp.getUi().alert('CPN別進捗またはCR別進捗を含むCSVファイル名が見つかりません。\n検出したファイル名:\n' + nameList);
+      return;
+    }
+
+    // 週の終了日降順でソート
+    fileList.sort((a, b) => {
+      if (a.end.getTime() !== b.end.getTime()) {
+        return b.end.getTime() - a.end.getTime();
+      }
+      // 同じ週の場合は、CPNを先に
+      if (a.type !== b.type) {
+        return a.type === 'CPN' ? -1 : 1;
+      }
+      return 0;
+    });
+
+    // 出力
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = ss.getSheetByName('週次レポート');
+    if (!sheet) sheet = ss.insertSheet('週次レポート');
+    sheet.clear();
+    const colARangeAll = sheet.getRange(1, 1, sheet.getMaxRows(), 1);
+    colARangeAll.setBorder(false, false, false, false, false, false);
+
+    let rowCursor = 1;
+    rowCursor += 3;
+    const startCol = 2; // B列から開始（A列は空欄）
+    
+    // 週ごとにグループ化
+    const weekGroups = new Map();
+    fileList.forEach(item => {
+      const weekKey = `${formatMd_(item.start)}~${formatMd_(item.end)}`;
+      if (!weekGroups.has(weekKey)) {
+        weekGroups.set(weekKey, { start: item.start, end: item.end, cpn: [], cr: [] });
+      }
+      const group = weekGroups.get(weekKey);
+      if (item.type === 'CPN') {
+        group.cpn.push(item);
+      } else {
+        group.cr.push(item);
+      }
+    });
+
+    // 週の終了日昇順でソート（古い週から新しい週へ）
+    const sortedWeeks = Array.from(weekGroups.entries()).sort((a, b) => 
+      a[1].end.getTime() - b[1].end.getTime()
+    );
+
+    // CPN別進捗セクションを出力
+    rowCursor = renderMonthlySummary_(sheet, rowCursor, startCol, monthlyFiles) + 1;
+    rowCursor = renderWeeklySummary_(sheet, rowCursor, startCol, sortedWeeks) + 1;
+    for (const [weekKey, group] of sortedWeeks) {
+      if (group.cpn.length === 0) continue;
+      
+      const weekLabel = `${formatMd_(group.start)}~${formatMd_(group.end)}`;
+      sheet.getRange(rowCursor, startCol, 1, 2).merge().setValue(`▼Outbrain CPN別進捗 (${weekLabel})`)
+        .setBackground('#a4c2f4').setFontColor('#000000').setFontWeight('bold');
+      rowCursor++;
+      
+      // ヘッダー
+      const tableHeaderRow = rowCursor;
+      sheet.getRange(rowCursor, startCol, 1, 14).setValues([[
+        'キャンペーン', '配信金額', 'CPC', 'Imp', 'CPM', 'Click', 'CTR', 'CV', 'CVR', 'CAC', 'LP遷移数', 'LP遷移率', 'おやつ診断', 'おやつ診断率'
+      ]]).setBackground('#000000').setFontColor('#FFFFFF').setFontWeight('bold').setHorizontalAlignment('center');
+      rowCursor++;
+      
+      // 各CPNファイルを処理
+        const campaignMap = new Map();
+      for (const item of group.cpn) {
+        const csv = item.file.getBlob().getDataAsString('UTF-8');
+        const rows = Utilities.parseCsv(csv);
+        if (!rows || rows.length < 2) continue;
+        
+        const header = rows[0];
+        const headerNormalized = header.map(normalizeHeader_);
+        const idxCampaignName = header.findIndex(h => {
+          if (!h) return false;
+          const normalized = h.trim().toLowerCase().replace(/\s+/g, ' ');
+          return normalized === 'campaign name';
+        });
+        const indices = findColumnIndices(header, CSV_COLUMN_TITLES);
+        const idxCost = indices[3];
+        const idxImp = indices[4];
+        const idxClick = indices[6];
+        const idxConv = indices[8];
+        const idxLpTransitions = findColumnIndexByKeywords_(headerNormalized, [
+          '01 lp gohobi conversions (click)',
+          'lp gohobi conversions (click)',
+          'lp conversions (click)',
+          'lp transitions',
+          'lp遷移数'
+        ]);
+        
+        // Total行からLP遷移数を取得
+        let totalLpTransitions = 0;
+        for (let r = 1; r < rows.length; r++) {
+          const row = rows[r];
+          if (!row || row.length === 0) continue;
+          const campaignNameRaw = idxCampaignName >= 0 ? String(row[idxCampaignName] || '') : '';
+          const campaignName = campaignNameRaw.trim().toLowerCase();
+          if (campaignName === 'total' || campaignName === '合計') {
+            totalLpTransitions = cleanNumericValue(idxLpTransitions >= 0 ? row[idxLpTransitions] : null) || 0;
+            break;
+          }
+        }
+        
+        for (let r = 1; r < rows.length; r++) {
+          const row = rows[r];
+          if (!row || row.length === 0) continue;
+          
+          const campaignNameRaw = idxCampaignName >= 0 ? String(row[idxCampaignName] || '') : '';
+          const campaignName = campaignNameRaw.trim();
+          if (!campaignName || campaignName.toLowerCase() === 'total' || campaignName.toLowerCase() === '合計') continue;
+          
+          const costRaw = cleanNumericValue(idxCost >= 0 ? row[idxCost] : null) || 0;
+          const cost = costRaw * 1.1 / 0.8;
+          const imp = cleanNumericValue(idxImp >= 0 ? row[idxImp] : null) || 0;
+          const click = cleanNumericValue(idxClick >= 0 ? row[idxClick] : null) || 0;
+          const conv = cleanNumericValue(idxConv >= 0 ? row[idxConv] : null) || 0;
+          const lpTransitions = cleanNumericValue(idxLpTransitions >= 0 ? row[idxLpTransitions] : null) || 0;
+          
+          if (!campaignMap.has(campaignName)) {
+            campaignMap.set(campaignName, { cost: 0, imp: 0, click: 0, conv: 0, lpTransitions: 0 });
+          }
+          const agg = campaignMap.get(campaignName);
+          agg.cost += cost;
+          agg.imp += imp;
+          agg.click += click;
+          agg.conv += conv;
+          agg.lpTransitions += lpTransitions;
+        }
+        
+        // Total行のLP遷移数を保存（各キャンペーンの集計に使用）
+        if (totalLpTransitions > 0 && campaignMap.size > 0) {
+          // Total行のLP遷移数を各キャンペーンに比例配分（オプション）
+          // ここではTotal行の値をそのまま使用するため、集計値を使用
+        }
+      }
+      
+      // データ行を出力
+      const campaigns = Array.from(campaignMap.entries())
+        .filter(([name, data]) => data.cost > 0)
+        .sort((a, b) => b[1].cost - a[1].cost);
+      if (campaigns.length > 0) {
+        const values = campaigns.map(([name, data]) => {
+          const cpc = data.click > 0 ? data.cost / data.click : 0;
+          const cpm = data.imp > 0 ? data.cost / data.imp * 1000 : 0;
+          const ctr = data.imp > 0 ? (data.click / data.imp) * 100 : 0;
+          const cvr = data.click > 0 ? (data.conv / data.click) * 100 : 0;
+          const cac = data.conv > 0 ? data.cost / data.conv : 0;
+          return [
+            name,
+            '¥' + Math.round(data.cost).toLocaleString(),
+            '¥' + cpc.toFixed(1),
+            data.imp.toLocaleString(),
+            '¥' + Math.round(cpm),
+            data.click.toLocaleString(),
+            ctr.toFixed(2) + '%',
+            data.conv,
+            cvr.toFixed(2) + '%',
+            data.conv > 0 ? '¥' + Math.round(cac).toLocaleString() : '-',
+            data.lpTransitions || 0,
+            '',
+            '', ''
+          ];
+        });
+        sheet.getRange(rowCursor, startCol, values.length, 14).setValues(values);
+        // LP遷移率の計算式を設定（LP遷移数/Click）
+        const lpRateFormulas = campaigns.map(([name, data], i) => {
+          const clickCol = startCol + 5; // Click列（startCol=2の場合、7列目=G列）
+          const lpCol = startCol + 10; // LP遷移数列（startCol=2の場合、12列目=L列）
+          const clickColLetter = String.fromCharCode(64 + clickCol);
+          const lpColLetter = String.fromCharCode(64 + lpCol);
+          return [`=IF(${clickColLetter}${rowCursor + i}>0, ${lpColLetter}${rowCursor + i}/${clickColLetter}${rowCursor + i}, "")`];
+        });
+        sheet.getRange(rowCursor, startCol + 11, values.length, 1).setFormulas(lpRateFormulas);
+        rowCursor += values.length;
+      }
+      const tableRows = rowCursor - tableHeaderRow;
+      sheet.getRange(tableHeaderRow, startCol, tableRows, 14)
+        .setBorder(true, true, true, true, true, true);
+      const leftBorderRange = sheet.getRange(tableHeaderRow, startCol - 1, tableRows, 1);
+      leftBorderRange.setBorder(false, false, false, true, false, false).clearContent();
+      sheet.getRange(tableHeaderRow, startCol, 1, 14).setHorizontalAlignment('center');
+      const cpnDataRows = tableRows - 1;
+      if (cpnDataRows > 0) {
+        sheet.getRange(tableHeaderRow + 1, startCol, cpnDataRows, 1).setHorizontalAlignment('left');
+        sheet.getRange(tableHeaderRow + 1, startCol + 1, cpnDataRows, 13).setHorizontalAlignment('right');
+      }
+      rowCursor += 2;
+    }
+
+    // CR別進捗セクションを出力
+    for (const [weekKey, group] of sortedWeeks) {
+      if (group.cr.length === 0) continue;
+      
+      const weekLabel = `${formatMd_(group.start)}~${formatMd_(group.end)}`;
+      sheet.getRange(rowCursor, startCol, 1, 2).merge().setValue(`▼Outbrain CR別進捗 (${weekLabel})`)
+        .setBackground('#ea9999').setFontColor('#000000').setFontWeight('bold');
+      rowCursor++;
+      // 1行空白を追加
+      rowCursor++;
+      
+      // CSVの行順でそのまま出力（配信金額が0以下は除外）
+      for (const item of group.cr) {
+        const csv = item.file.getBlob().getDataAsString('UTF-8');
+        const rows = Utilities.parseCsv(csv);
+        if (!rows || rows.length < 2) continue;
+        
+        const header = rows[0];
+        // Campaign Nameを取得
+        const idxCampaignName = header.findIndex(h => {
+          if (!h) return false;
+          const normalized = h.trim().toLowerCase().replace(/\s+/g, ' ');
+          return normalized === 'campaign name';
+        });
+        const indices = findColumnIndices(header, CSV_COLUMN_TITLES);
+        const idxImage = indices[0];
+        const idxContentTitle = indices[1];
+        const idxCost = indices[3];
+        const idxImp = indices[4];
+        const idxClick = indices[6];
+        const idxConv = indices[8];
+        
+        // LP遷移数の列を取得
+        const headerNormalized = header.map(normalizeHeader_);
+        const idxLpTransitions = findColumnIndexByKeywords_(headerNormalized, [
+          '01 lp gohobi conversions (click)',
+          'lp gohobi conversions (click)',
+          'lp conversions (click)',
+          'lp transitions',
+          'lp遷移数'
+        ]);
+        
+        // キャンペーン名を取得（最初のデータ行から）
+        let campaignName = '';
+        for (let r = 1; r < rows.length; r++) {
+          const row = rows[r];
+          if (!row || row.length === 0) continue;
+          const costRaw = cleanNumericValue(idxCost >= 0 ? row[idxCost] : null) || 0;
+          if (costRaw > 0) {
+            campaignName = idxCampaignName >= 0 ? String(row[idxCampaignName] || '') : '';
+            break;
+          }
+        }
+        
+        // キャンペーン名を表示
+        if (campaignName) {
+          sheet.getRange(rowCursor, startCol).setValue(campaignName).setFontWeight('bold');
+          rowCursor++;
+        }
+        
+        // ヘッダー（A列: 空、B列: 画像表示、C列: テキスト...）
+        const tableHeaderRow = rowCursor;
+        sheet.getRange(rowCursor, 1, 1, 13).setValues([[
+          '', '画像表示', 'テキスト', '軸', '配信金額', 'CPC', 'Imp', 'Click', 'CTR', 'CV', 'CVR', 'CAC', 'LP遷移数'
+        ]]).setBackground('#000000').setFontColor('#FFFFFF').setFontWeight('bold').setHorizontalAlignment('center');
+        // LP遷移率のヘッダーを追加（14列目）
+        sheet.getRange(rowCursor, 14).setValue('LP遷移率').setBackground('#000000').setFontColor('#FFFFFF').setFontWeight('bold').setHorizontalAlignment('center');
+        rowCursor++;
+        
+        const values = [];
+        for (let r = 1; r < rows.length; r++) {
+          const row = rows[r];
+          if (!row || row.length === 0) continue;
+          
+          const contentTitle = idxContentTitle >= 0 ? String(row[idxContentTitle] || '') : '';
+          const costRaw = cleanNumericValue(idxCost >= 0 ? row[idxCost] : null) || 0;
+          if (!contentTitle || costRaw <= 0) continue;
+          
+          const cost = costRaw * 1.1 / 0.8;
+          const imp = cleanNumericValue(idxImp >= 0 ? row[idxImp] : null) || 0;
+          const click = cleanNumericValue(idxClick >= 0 ? row[idxClick] : null) || 0;
+          const conv = cleanNumericValue(idxConv >= 0 ? row[idxConv] : null) || 0;
+          const image = idxImage >= 0 ? String(row[idxImage] || '') : '';
+          const lpTransitions = cleanNumericValue(idxLpTransitions >= 0 ? row[idxLpTransitions] : null) || 0;
+          
+          const cpc = click > 0 ? cost / click : 0;
+          const ctr = imp > 0 ? (click / imp) * 100 : 0;
+          const cvr = click > 0 ? (conv / click) * 100 : 0;
+          const cac = conv > 0 ? cost / conv : 0;
+          
+          values.push([
+            image,
+            '',
+            contentTitle,
+            '',
+            '¥' + Math.round(cost).toLocaleString(),
+            '¥' + cpc.toFixed(1),
+            imp.toLocaleString(),
+            click.toLocaleString(),
+            ctr.toFixed(2) + '%',
+            conv,
+            cvr.toFixed(2) + '%',
+            conv > 0 ? '¥' + Math.round(cac).toLocaleString() : '-',
+            lpTransitions,
+            ''
+          ]);
+        }
+        
+        if (values.length > 0) {
+          sheet.getRange(rowCursor, 1, values.length, 14).setValues(values);
+          const imgFormulas = values.map((_, i) => [`=IF(A${rowCursor + i}<>"", IMAGE(A${rowCursor + i}, 1), "")`]);
+          sheet.getRange(rowCursor, 2, values.length, 1).setFormulas(imgFormulas);
+          const lpRateFormulas = values.map((_, i) => [`=IF(H${rowCursor + i}>0, M${rowCursor + i}/H${rowCursor + i}, "")`]);
+          sheet.getRange(rowCursor, 14, values.length, 1).setFormulas(lpRateFormulas);
+          rowCursor += values.length;
+        }
+        const tableRows = rowCursor - tableHeaderRow;
+        sheet.getRange(tableHeaderRow, 1, tableRows, 14)
+          .setBorder(true, true, true, true, true, true);
+        sheet.getRange(tableHeaderRow, 1, 1, 14).setHorizontalAlignment('center');
+        const crDataRows = tableRows - 1;
+        if (crDataRows > 0) {
+          sheet.getRange(tableHeaderRow + 1, 1, crDataRows, 3).setHorizontalAlignment('left');
+          sheet.getRange(tableHeaderRow + 1, 4, crDataRows, 1).setHorizontalAlignment('center');
+          sheet.getRange(tableHeaderRow + 1, 5, crDataRows, 10).setHorizontalAlignment('right');
+        }
+      }
+      rowCursor += 1;
+    }
+
+    // 体裁
+    sheet.getRange(1, 1, rowCursor, 1)
+      .setBackground(null)
+      .setFontColor('#FFFFFF');
+    // A40:A77 の枠線をクリア（B列側の縦線は維持）
+    sheet.getRange(40, 1, 38, 1).setBorder(false, false, false, false, false, false);
+
+    const lastCol = 17;
+    for (let c = 1; c <= lastCol; c++) sheet.autoResizeColumn(c);
+    // A列の幅を設定
+    sheet.setColumnWidth(1, 70);
+    // B列（画像表示）の幅を設定
+    sheet.setColumnWidth(2, 120);
+    // D〜Q列の幅を80に設定
+    for (let c = 4; c <= 17; c++) {
+      sheet.setColumnWidth(c, 80);
+    }
+  } catch (e) {
+    Logger.log('週次レポート生成でエラー: ' + e.toString());
+    sendErrorNotification(e);
+    SpreadsheetApp.getUi().alert('週次レポート生成でエラーが発生しました: ' + e.toString());
+  }
+}
+
+/**
+ * ファイル名から「週の開始日～終了日」を推定
+ * 例: "10/20~10/26", "2024-10-20~2024-10-26", "20241020-20241026", "10_20〜10_26"
+ */
+function parseWeekFromFilename_(name) {
+  if (!name) return null;
+  const s = String(name);
+  // 区切り（~, 〜, ～, -, ー, _, "to"）
+  const sep = '(?:~|〜|～|\\-|ー|to|_)';
+  // 日付区切り（/, -, _, ., 全角スラッシュ／, 全角ハイフン－）
+  const dsep = '[\\./_\\-／－]?';
+  // yyyy[-/_／－]?MM[-/_／－]?dd <sep> yyyy[-/_／－]?MM[-/_／－]?dd
+  const reYmd = new RegExp('(20\\d{2})' + dsep + '(\\d{2})' + dsep + '(\\d{2})\\s*' + sep + '\\s*(20\\d{2})' + dsep + '(\\d{2})' + dsep + '(\\d{2})');
+  let m = s.match(reYmd);
+  if (m) {
+    const start = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00+09:00`);
+    const end = new Date(`${m[4]}-${m[5]}-${m[6]}T00:00:00+09:00`);
+    return { start, end };
+  }
+  // MM[sep]?dd <sep> MM[sep]?dd（年は今年）
+  const reMd = new RegExp('(\\d{1,2})' + dsep + '(\\d{1,2})\\s*' + sep + '\\s*(\\d{1,2})' + dsep + '(\\d{1,2})');
+  m = s.match(reMd);
+  if (m) {
+    const now = new Date();
+    const year = now.getFullYear();
+    const start = new Date(`${year}-${pad2_(m[1])}-${pad2_(m[2])}T00:00:00+09:00`);
+    const end = new Date(`${year}-${pad2_(m[3])}-${pad2_(m[4])}T00:00:00+09:00`);
+    return { start, end };
+  }
+  return null;
+}
+
+function pad2_(n) {
+  return ('0' + Number(n)).slice(-2);
+}
+
+function formatMd_(d) {
+  return Utilities.formatDate(d, 'JST', 'MM/dd');
+}
+
+function renderMonthlySummary_(sheet, startRow, startCol, monthlyFiles) {
+  if (!monthlyFiles || monthlyFiles.length === 0) {
+    return startRow - 1;
+  }
+  const monthlyData = getMonthlySummaryData_(monthlyFiles);
+  if (monthlyData.length === 0) {
+    return startRow - 1;
+  }
+  let row = startRow;
+  const width = 14;
+  sheet.getRange(row, startCol, 1, width).merge().setValue('＜月別進捗＞').setFontWeight('bold').setHorizontalAlignment('left');
+  row++;
+  const headerLabels = ['月', '配信金額', 'CPC', 'Imp', 'Click', 'CTR', '管理CV', '管理CVR', '管理CAC', '貴社CV', '貴社CVR', '貴社CAC', '転換率', ''];
+  const headerRow = row;
+  sheet.getRange(row, startCol, 1, headerLabels.length).setValues([headerLabels])
+    .setBackground('#000000').setFontColor('#FFFFFF').setFontWeight('bold');
+  row++;
+  monthlyData.forEach(item => {
+    sheet.getRange(row, startCol, 1, headerLabels.length).setValues([[item.month, item.cost, item.cpc, item.imp, item.click, item.ctr, item.managerCv, item.managerCvr, item.managerCac, item.clientCv, item.clientCvr, item.clientCac, item.conversionRate, '']]);
+    row++;
+  });
+  const tableRows = row - headerRow;
+  sheet.getRange(headerRow, startCol, tableRows, headerLabels.length)
+    .setBorder(true, true, true, true, true, true);
+  sheet.getRange(headerRow, startCol - 1, tableRows, 1)
+    .setBorder(false, false, false, true, false, false)
+    .clearContent();
+  const headerRange = sheet.getRange(headerRow, startCol, 1, headerLabels.length);
+  headerRange.setHorizontalAlignment('center');
+  headerRange.setBorder(true, true, true, true, true, true);
+  const dataRowCount = tableRows - 1;
+  if (dataRowCount > 0) {
+    const centeredCols = Math.min(1, headerLabels.length);
+    sheet.getRange(headerRow + 1, startCol, dataRowCount, centeredCols)
+      .setHorizontalAlignment('center')
+      .setBorder(true, true, true, true, true, true);
+    if (headerLabels.length > centeredCols) {
+      sheet.getRange(headerRow + 1, startCol + centeredCols, dataRowCount, headerLabels.length - centeredCols)
+        .setHorizontalAlignment('right')
+        .setBorder(true, true, true, true, true, true);
+    }
+  }
+  return row;
+}
+
+function renderWeeklySummary_(sheet, startRow, startCol, sortedWeeks) {
+  const weeklyData = getWeeklySummaryData_(sortedWeeks);
+  if (weeklyData.length === 0) {
+    return startRow - 1;
+  }
+  let row = startRow;
+  const headerLabels = ['週', '配信金額', 'CPC', 'Imp', 'Click', 'CTR', '管理CV', '管理CVR', '管理CAC', '貴社CV', '貴社CVR', '貴社CAC', '転換率'];
+  const tableWidth = headerLabels.length;
+  sheet.getRange(row, startCol, 1, tableWidth).merge().setValue('＜週別進捗＞').setFontWeight('bold').setHorizontalAlignment('left');
+  row++;
+  const headerRow = row;
+  // 週列を開始日、〜、終了日の3列に分割
+  sheet.getRange(row, startCol, 1, tableWidth).setValues([headerLabels])
+    .setBackground('#000000').setFontColor('#FFFFFF').setFontWeight('bold');
+  row++;
+  weeklyData.forEach(item => {
+    // week形式は "10/20~10/26" のような形式なので、分割する
+    const weekParts = item.week.split(/[~〜～]/);
+    const startDate = weekParts[0] || '';
+    const endDate = weekParts[1] || '';
+    const periodLabel = `${startDate}〜${endDate}`;
+    sheet.getRange(row, startCol, 1, tableWidth).setValues([[
+      periodLabel, item.cost, item.cpc, item.imp, item.click, item.ctr,
+      item.managerCv, item.managerCvr, item.managerCac, item.clientCv, item.clientCvr, item.clientCac, item.conversionRate
+    ]]);
+    row++;
+  });
+  const tableRows = row - headerRow;
+  sheet.getRange(headerRow, startCol, tableRows, tableWidth)
+    .setBorder(true, true, true, true, true, true);
+  sheet.getRange(headerRow, startCol - 1, tableRows, 1)
+    .setBorder(false, false, false, true, false, false)
+    .clearContent();
+  sheet.getRange(headerRow, startCol, 1, tableWidth).setHorizontalAlignment('center');
+  const weeklyDataRowCount = tableRows - 1;
+  if (weeklyDataRowCount > 0) {
+    sheet.getRange(headerRow + 1, startCol, weeklyDataRowCount, 1).setHorizontalAlignment('center');
+    if (tableWidth > 1) {
+      sheet.getRange(headerRow + 1, startCol + 1, weeklyDataRowCount, tableWidth - 1)
+        .setHorizontalAlignment('right');
+    }
+  }
+  return row;
+}
+
+function getMonthlySummaryData_(monthlyFiles) {
+  const data = [];
+  const sorted = [...monthlyFiles].sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+  const currentYear = new Date().getFullYear();
+  sorted.forEach(fileInfo => {
+    const summary = extractSummaryFromCsv_(fileInfo.file);
+    if (summary) {
+      let monthLabel = fileInfo.name.replace(/\.csv$/i, '');
+      // ファイル名に年が含まれていない場合、現在の年を追加
+      if (!/^\d{4}年/.test(monthLabel)) {
+        monthLabel = `${currentYear}年${monthLabel}`;
+      }
+      data.push({
+        month: monthLabel,
+        ...summary
+      });
+    }
+  });
+  return data;
+}
+
+function getWeeklySummaryData_(sortedWeeks) {
+  const data = [];
+  sortedWeeks.forEach(([weekKey, group]) => {
+    if (!group.cpn || group.cpn.length === 0) return;
+    const summary = extractSummaryFromCsv_(group.cpn[0].file);
+    if (summary) {
+      data.push({
+        week: weekKey,
+        ...summary
+      });
+    }
+  });
+  return data;
+}
+
+function extractSummaryFromCsv_(file) {
+  try {
+    const csv = file.getBlob().getDataAsString('UTF-8');
+    const rows = Utilities.parseCsv(csv);
+    if (!rows || rows.length < 2) return null;
+    const header = rows[0];
+    
+    // CSV_COLUMN_TITLESを使用して列インデックスを取得
+    const indices = findColumnIndices(header, CSV_COLUMN_TITLES);
+    const idxCampaignName = header.findIndex(h => {
+      if (!h) return false;
+      const normalized = h.trim().toLowerCase().replace(/\s+/g, ' ');
+      return normalized === 'campaign name';
+    });
+    const idxCost = indices[3]; // Amount Spent
+    const idxImp = indices[4];  // Impressions
+    const idxCpc = indices[5];  // Avg. CPC
+    const idxClick = indices[6]; // Clicks
+    const idxCtr = indices[7];   // CTR
+    const idxConv = indices[8];  // Conversions (Click)
+    const idxCvr = indices[9];   // Conversion Rate (Click)
+    const idxCac = indices[10];  // CPA (Click)
+    
+    // Total行を探す（Campaign Nameが "Total" または "合計" の行）
+    let dataRow = null;
+    let dataRowIndex = -1;
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.length === 0) continue;
+      
+      const campaignName = idxCampaignName >= 0 ? String(row[idxCampaignName] || '').trim().toLowerCase() : '';
+      if (campaignName === 'total' || campaignName === '合計' || campaignName === 'totals') {
+        dataRow = row;
+        dataRowIndex = i;
+        break;
+      }
+    }
+    
+    // Total行が見つからない場合、最後の行を試す（集計行が最後にある場合）
+    if (!dataRow && rows.length > 1) {
+      dataRow = rows[rows.length - 1];
+      dataRowIndex = rows.length - 1;
+    }
+    
+    if (!dataRow) return null;
+    
+    // データを取得
+    const costRaw = cleanNumericValue(idxCost >= 0 ? dataRow[idxCost] : null) || 0;
+    const cost = costRaw * 1.1 / 0.8; // /0.8*1.1 の計算
+    const cpcRaw = cleanNumericValue(idxCpc >= 0 ? dataRow[idxCpc] : null);
+    const impRaw = cleanNumericValue(idxImp >= 0 ? dataRow[idxImp] : null);
+    const clickRaw = cleanNumericValue(idxClick >= 0 ? dataRow[idxClick] : null);
+    const ctrRaw = idxCtr >= 0 ? String(dataRow[idxCtr] || '') : '';
+    const managerCvRaw = cleanNumericValue(idxConv >= 0 ? dataRow[idxConv] : null);
+    const managerCvrRaw = idxCvr >= 0 ? String(dataRow[idxCvr] || '') : '';
+    const managerCacRaw = cleanNumericValue(idxCac >= 0 ? dataRow[idxCac] : null);
+    
+    // 貴社計測のCV/CVR/CACは、現時点ではCSVに含まれていない可能性があるため、空にする
+    // 転換率も同様
+    const clientCvRaw = null;
+    const clientCvrRaw = '';
+    const clientCacRaw = null;
+    const conversionRateRaw = '';
+    
+    return {
+      cost: formatCurrency_(cost),
+      cpc: formatCurrencyDecimal_(cpcRaw),
+      imp: formatInteger_(impRaw),
+      click: formatInteger_(clickRaw),
+      ctr: formatPercent_(ctrRaw),
+      managerCv: formatInteger_(managerCvRaw),
+      managerCvr: formatPercent_(managerCvrRaw),
+      managerCac: formatCurrency_(managerCacRaw),
+      clientCv: formatInteger_(clientCvRaw),
+      clientCvr: formatPercent_(clientCvrRaw),
+      clientCac: formatCurrency_(clientCacRaw),
+      conversionRate: formatPercent_(conversionRateRaw)
+    };
+  } catch (e) {
+    Logger.log('サマリー抽出失敗: ' + e.toString());
+    return null;
+  }
+}
+
+function normalizeHeader_(value) {
+  return String(value || '').replace(/\s+/g, '').toLowerCase();
+}
+
+function findColumnIndexByKeywords_(header, keywords) {
+  const normalizedKeywords = keywords.map(k => normalizeHeader_(k));
+  for (let i = 0; i < header.length; i++) {
+    const cell = header[i];
+    if (normalizedKeywords.includes(cell)) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function formatCurrency_(value) {
+  if (value === null || value === undefined) return '';
+  const num = typeof value === 'number' ? value : cleanNumericValue(value);
+  if (num === null || isNaN(num)) return '';
+  return '¥' + Math.round(num).toLocaleString();
+}
+
+function formatCurrencyDecimal_(value) {
+  if (value === null || value === undefined) return '';
+  const num = typeof value === 'number' ? value : cleanNumericValue(value);
+  if (num === null || isNaN(num)) return '';
+  return '¥' + Number(num).toFixed(1);
+}
+
+function formatInteger_(value) {
+  if (value === null || value === undefined) return '';
+  const num = typeof value === 'number' ? value : cleanNumericValue(value);
+  if (num === null || isNaN(num)) return '';
+  return Math.round(num).toLocaleString();
+}
+
+function formatPercent_(value) {
+  if (value === null || value === undefined || value === '') return '';
+  const str = String(value);
+  if (str.indexOf('%') !== -1) {
+    return str;
+  }
+  const num = cleanNumericValue(str);
+  if (num === null || isNaN(num)) return '';
+  return Number(num).toFixed(2) + '%';
+}
+
+/**
+
+ * 処理済みファイルのリストを取得
+
+ */
+
+function getProcessedFiles() {
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  let logSheet = ss.getSheetByName('処理ログ');
+
+  
+
+  if (!logSheet) {
+
+    logSheet = ss.insertSheet('処理ログ');
+
+    // ヘッダー行を安全に追加
+
+    const headers = ['ファイルID', 'ファイル名', '処理日時'];
+
+    if (headers && headers.length > 0) {
+
+      logSheet.appendRow(headers);
+
+    }
+
+  }
+
+  
+
+  const data = logSheet.getDataRange().getValues();
+
+  return data.slice(1).map(row => row[0]); // ヘッダーを除く
+
+}
+
+/**
+
+ * ファイルを処理済みとしてマーク
+
+ */
+
+function markFileAsProcessed(fileId, fileName) {
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  const logSheet = ss.getSheetByName('処理ログ');
+
+  // データが空でないことを確認
+
+  const rowData = [fileId || '', fileName || '', new Date()];
+
+  if (rowData && rowData.length > 0 && rowData.some(cell => cell !== '')) {
+
+    logSheet.appendRow(rowData);
+
+  }
+
+}
+
+/**
+
+ * 手動でCSVファイルを取り込み
+
+ */
+
+function manualImportCSV() {
+
+  const ui = SpreadsheetApp.getUi();
+
+  
+
+  if (!CSV_FOLDER_ID) {
+
+    ui.alert('エラー', 'CSVフォルダーIDが設定されていません。初期設定を実行してください。', ui.ButtonSet.OK);
+
+    return;
+
+  }
+
+  
+
+  try {
+
+    const folder = DriveApp.getFolderById(CSV_FOLDER_ID);
+
+    const files = folder.getFilesByType(MimeType.CSV);
+
+    
+
+    const fileList = [];
+
+    while (files.hasNext()) {
+
+      fileList.push(files.next());
+
+    }
+
+    
+
+    if (fileList.length === 0) {
+
+      ui.alert('指定フォルダーにCSVファイルがありません。');
+
+      return;
+
+    }
+
+    
+
+    // 最新のCSVファイルを取り込み
+
+    const latestFile = fileList.sort((a, b) => b.getLastUpdated() - a.getLastUpdated())[0];
+
+    importCSVToSheet(latestFile);
+
+    
+
+    ui.alert('CSVファイルを取り込みました: ' + latestFile.getName());
+
+    
+
+    // データ分析を実行
+
+    analyzeData();
+
+    
+
+  } catch (error) {
+
+    ui.alert('エラー', 'CSVファイルの取り込み中にエラーが発生しました: ' + error.toString(), ui.ButtonSet.OK);
+
+  }
+
+}
+
+/**
+
+ * CSVファイルをスプレッドシートに取り込み（列タイトル名から自動検出）
+
+ */
+
+function importCSVToSheet(file) {
+
+  try {
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+    let dataSheet = ss.getSheetByName('広告データ');
+
+    
+
+    // CSVファイルを読み込み
+
+    const csvContent = file.getBlob().getDataAsString('UTF-8');
+
+    
+    // 空のCSVファイルをチェック
+    if (!csvContent || csvContent.trim() === '') {
+      Logger.log('CSVファイルが空です');
+      throw new Error('CSVファイルが空です');
+    }
+    
+    const csvData = Utilities.parseCsv(csvContent);
+    
+
+    if (csvData.length === 0) {
+
+      Logger.log('CSVファイルにデータがありません');
+
+      throw new Error('CSVファイルにデータがありません');
+
+    }
+
+    
+
+    // ヘッダー行から列のインデックスを取得
+
+    const headerRow = csvData[0];
+
+    
+    // ヘッダー行が空でないことを確認
+    if (!headerRow || headerRow.length === 0 || headerRow.join('').trim() === '') {
+      Logger.log('CSVファイルのヘッダー行が空です');
+      throw new Error('CSVファイルのヘッダー行が空です');
+    }
+    
+    const columnIndices = findColumnIndices(headerRow, CSV_COLUMN_TITLES);
+
+    
+
+    // 見つからなかった列をログに記録
+
+    const notFoundColumns = CSV_COLUMN_TITLES.filter((title, index) => columnIndices[index] === -1);
+
+    if (notFoundColumns.length > 0) {
+
+      Logger.log('警告: 以下の列が見つかりませんでした: ' + notFoundColumns.join(', '));
+
+    }
+
+    
+
+    // シートが存在しない場合は作成
+
+    if (!dataSheet) {
+
+      dataSheet = ss.insertSheet('広告データ');
+
+      // ヘッダー行を追加（日本語のヘッダーを使用）
+
+      // SHEET_HEADER_TITLESが空でないことを確認
+
+      if (SHEET_HEADER_TITLES && SHEET_HEADER_TITLES.length > 0) {
+
+        dataSheet.appendRow(SHEET_HEADER_TITLES);
+
+      } else {
+
+        throw new Error('ヘッダータイトルが設定されていません');
+
+      }
+
+      
+
+      // ヘッダー行のフォーマット
+
+      const headerRange = dataSheet.getRange(1, 1, 1, SHEET_HEADER_TITLES.length);
+
+      headerRange.setBackground('#4A86E8');
+
+      headerRange.setFontColor('#FFFFFF');
+
+      headerRange.setFontWeight('bold');
+
+      headerRange.setHorizontalAlignment('center');
+
+    } else {
+
+      // ヘッダー行が正しいか確認・更新
+
+      const currentHeaders = dataSheet.getRange(1, 1, 1, SHEET_HEADER_TITLES.length).getValues()[0];
+
+      const headersMatch = currentHeaders.every((header, index) => header === SHEET_HEADER_TITLES[index]);
+
+      
+
+      if (!headersMatch) {
+
+        // ヘッダーを更新
+
+        dataSheet.getRange(1, 1, 1, SHEET_HEADER_TITLES.length).setValues([SHEET_HEADER_TITLES]);
+
+      }
+
+      
+
+      // 既存データをクリア（ヘッダーは残す）
+
+      const lastRow = dataSheet.getLastRow();
+
+      if (lastRow > 1) {
+
+        dataSheet.getRange(2, 1, lastRow - 1, dataSheet.getLastColumn()).clearContent();
+
+        dataSheet.getRange(2, 1, lastRow - 1, dataSheet.getLastColumn()).setBackground(null);
+
+      }
+
+    }
+
+    
+
+    // データ行を処理（バッチ処理で効率化）
+
+    const rowsToInsert = [];
+
+    
+
+    for (let i = 1; i < csvData.length; i++) {
+
+      const row = csvData[i];
+
+      
+      // 行が空でないことを確認
+      if (!row || row.length === 0) {
+        continue;
+      }
+      
+      // 行の内容がすべて空でないことを確認
+      const rowContent = row.join('').trim();
+      if (rowContent === '') {
+        continue;
+      }
+      
+      // 列インデックスからデータを抽出
+      const extractedData = columnIndices.map(colIndex => {
+
+        if (colIndex !== -1 && colIndex < row.length) {
+
+          const value = row[colIndex];
+
+          return value !== null && value !== undefined ? String(value).trim() : '';
+
+        }
+
+        return '';
+
+      });
+
+      
+      // 抽出したデータがすべて空でないことを確認
+      const hasValidData = extractedData.some(cell => cell !== '');
+      
+      if (hasValidData && extractedData.length > 0) {
+        // 画像表示列を追加（インデックス1の位置）
+        // データ配列に画像表示列を挿入（インデックス1の位置）
+        // 画像表示列は後でIMAGE関数の式を設定するため、ここでは空文字列を設定
+        const dataWithImage = [
+          extractedData[0],      // Image URL (インデックス0)
+          '',                    // 画像表示（後でIMAGE関数の式を設定）- インデックス1
+          ...extractedData.slice(1) // 残りのデータ（インデックス2以降）
+        ];
+        
+        // 配信金額（Amount Spent）が0でないことを確認
+        // 配信金額はインデックス4（SHEET_HEADER_TITLESの4番目、画像表示列追加後）
+        const amountSpentIndex = 4;
+        const amountSpentValue = dataWithImage[amountSpentIndex];
+        
+        // 配信金額を数値に変換してチェック
+        const amountSpent = cleanNumericValue(amountSpentValue);
+        
+        // 配信金額が0でない場合のみ追加（nullやundefinedの場合は追加する）
+        if (amountSpent === null || amountSpent === undefined || amountSpent !== 0) {
+          rowsToInsert.push(dataWithImage);
+        } else {
+          Logger.log(`配信金額が0のため、行をスキップしました: ${dataWithImage[2]} (ID: ${dataWithImage[3]})`);
+        }
+      }
+    }
+
+    
+    // バッチでデータを追加
+    if (rowsToInsert.length > 0) {
+      const lastRow = dataSheet.getLastRow();
+      const startRow = lastRow + 1;
+      const targetRange = dataSheet.getRange(startRow, 1, rowsToInsert.length, SHEET_HEADER_TITLES.length);
+      
+      // データを設定
+      targetRange.setValues(rowsToInsert);
+      
+      // 画像表示列（列B、インデックス2）にIMAGE関数の式を設定
+      const imageColumnRange = dataSheet.getRange(startRow, 2, rowsToInsert.length, 1);
+      // setFormulasは2次元配列（string[][]）を期待するため、各要素を配列でラップ
+      const imageFormulas = rowsToInsert.map((row, index) => {
+        const imageUrl = row[0] || ''; // Image URL (インデックス0)
+        if (imageUrl && imageUrl.trim() !== '') {
+          // 相対参照を使用（A列の同じ行のURLを参照）
+          // IMAGE関数の第2引数: 2 = 画像をセルに合わせて縦横比を維持してリサイズ
+          const rowNum = startRow + index;
+          return [`=IF(A${rowNum}<>"", IMAGE(A${rowNum}, 1), "")`];
+        }
+        return [''];
+      });
+      imageColumnRange.setFormulas(imageFormulas);
+      
+      Logger.log(`${rowsToInsert.length}行のデータを追加しました`);
+    } else {
+      Logger.log('追加する有効なデータがありませんでした');
+      throw new Error('CSVファイルに有効なデータ行がありません');
+    }
+    
+
+    // 列幅を自動調整
+
+    for (let i = 3; i <= SHEET_HEADER_TITLES.length; i++) {
+
+      dataSheet.autoResizeColumn(i);
+
+    }
+    
+    // A/B列の幅を設定
+    dataSheet.setColumnWidth(1, 50);
+    dataSheet.setColumnWidth(2, 120);
+
+    
+
+    Logger.log('CSVファイルを取り込みました: ' + file.getName());
+
+    
+  } catch (error) {
+    Logger.log('CSV取り込みエラー: ' + error.toString());
+    Logger.log('エラースタック: ' + error.stack);
+    throw error;
+  }
+}
+
+/**
+
+ * ヘッダー行から指定された列タイトルのインデックスを検索
+
+ * @param {Array} headerRow - CSVのヘッダー行
+
+ * @param {Array} targetTitles - 検索する列タイトルの配列
+
+ * @return {Array} 各タイトルのインデックス（見つからない場合は-1）
+
+ */
+
+function findColumnIndices(headerRow, targetTitles) {
+
+  Logger.log('=== CSV列の検索を開始 ===');
+
+  Logger.log('CSVヘッダー行: ' + JSON.stringify(headerRow));
+
+  
+
+  const indices = targetTitles.map((targetTitle, idx) => {
+
+    // 完全一致で検索
+
+    let index = headerRow.findIndex(header => 
+
+      header && header.trim() === targetTitle.trim()
+
+    );
+
+    
+
+    // 見つからない場合、大文字小文字を区別せずに検索
+
+    if (index === -1) {
+
+      index = headerRow.findIndex(header => 
+
+        header && header.trim().toLowerCase() === targetTitle.trim().toLowerCase()
+
+      );
+
+    }
+
+    
+
+    // ログ出力
+
+    if (index !== -1) {
+
+      Logger.log(`✓ [${idx}] "${targetTitle}" → CSV列${index+1} (${headerRow[index]})`);
+
+    } else {
+
+      Logger.log(`✗ [${idx}] "${targetTitle}" → 見つかりませんでした`);
+
+    }
+
+    
+
+    return index;
+
+  });
+
+  
+
+  Logger.log('=== 列の検索完了 ===');
+
+  return indices;
+
+}
+
+/**
+
+ * KPIのステータスを判定
+
+ * @param {string} kpiType - 'CTR', 'CPC', 'CPA'
+
+ * @param {number} value - 判定する値
+
+ * @return {Object} status情報（level, color, label, action）
+
+ */
+
+function getKPIStatus(kpiType, value) {
+
+  if (value === null || value === undefined) {
+
+    return null;
+
+  }
+
+  
+
+  const standards = KPI_STANDARDS[kpiType];
+
+  const actions = IMPROVEMENT_ACTIONS[kpiType];
+
+  
+
+  // CTRの判定
+
+  if (kpiType === 'CTR') {
+
+    if (value >= standards.healthy.min) {
+
+      return { level: 'healthy', color: standards.healthy.color, label: standards.healthy.label, action: actions.healthy };
+
+    } else if (value >= standards.warning.min && value <= standards.warning.max) {
+
+      return { level: 'warning', color: standards.warning.color, label: standards.warning.label, action: actions.warning };
+
+    } else if (value <= standards.danger.max) {
+
+      return { level: 'danger', color: standards.danger.color, label: standards.danger.label, action: actions.danger };
+
+    }
+
+  }
+
+  
+
+  // CPCの判定
+
+  if (kpiType === 'CPC') {
+
+    if (value <= standards.healthy.max) {
+
+      return { level: 'healthy', color: standards.healthy.color, label: standards.healthy.label, action: actions.healthy };
+
+    } else if (value >= standards.warning.min && value <= standards.warning.max) {
+
+      return { level: 'warning', color: standards.warning.color, label: standards.warning.label, action: actions.warning };
+
+    } else if (value >= standards.danger.min) {
+
+      return { level: 'danger', color: standards.danger.color, label: standards.danger.label, action: actions.danger };
+
+    }
+
+  }
+
+  
+
+  // CPAの判定
+
+  if (kpiType === 'CPA') {
+
+    if (value <= standards.healthy.max) {
+
+      return { level: 'healthy', color: standards.healthy.color, label: standards.healthy.label, action: actions.healthy };
+
+    } else if (value >= standards.warning.min && value <= standards.warning.max) {
+
+      return { level: 'warning', color: standards.warning.color, label: standards.warning.label, action: actions.warning };
+
+    } else if (value >= standards.danger.min) {
+
+      return { level: 'danger', color: standards.danger.color, label: standards.danger.label, action: actions.danger };
+
+    }
+
+  }
+
+  
+
+  return null;
+
+}
+
+/**
+
+ * データを分析してKPI基準に基づいて色分けと改善アクションを表示
+
+ */
+
+function analyzeData() {
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  const dataSheet = ss.getSheetByName('広告データ');
+
+  
+
+  if (!dataSheet || dataSheet.getLastRow() <= 1) {
+
+    Logger.log('分析するデータがありません');
+
+    return;
+
+  }
+
+  
+
+  const lastRow = dataSheet.getLastRow();
+
+  // 画像表示列が追加されたため、列数はSHEET_HEADER_TITLES.lengthを使用
+  const dataRange = dataSheet.getRange(2, 1, lastRow - 1, SHEET_HEADER_TITLES.length);
+
+  const data = dataRange.getValues();
+
+  
+
+  const warnings = [];
+
+  
+
+  // 列のインデックスを取得（0始まり - SHEET_HEADER_TITLESの順序に対応）
+  // 注意: 画像表示列が追加されたため、インデックスが1つずつシフト
+
+  const colImage = 0;              // Image (Image URL)
+
+  const colImagePreview = 1;       // 画像表示 (IMAGE関数)
+
+  const colContentTitle = 2;       // Content Title (Content Title)
+
+  const colID = 3;                 // ID (ID)
+
+  const colCTR = 8;                // CTR (CTR) - 画像表示列追加により+1
+
+  const colCPC = 6;                // Avg. CPC (Avg. CPC) - 画像表示列追加により+1
+
+  const colCPA = 11;               // CPA(円) (CPA (Click)) - 画像表示列追加により+1
+
+  
+
+  // デバッグ用ログ
+
+  Logger.log(`=== データ分析開始 ===`);
+
+  Logger.log(`取得したデータ行数: ${data.length}`);
+
+  Logger.log(`列インデックス - CTR:${colCTR}, CPC:${colCPC}, CPA:${colCPA}`);
+
+  
+
+  // 各行をチェック
+
+  for (let i = 0; i < data.length; i++) {
+
+    const rowNum = i + 2; // 実際の行番号（ヘッダーを考慮）
+
+    const rowRange = dataSheet.getRange(rowNum, 1, 1, SHEET_HEADER_TITLES.length);
+    rowRange.setBackground(null);
+
+    const contentTitle = data[i][colContentTitle];  // コンテンツタイトル
+
+    const adID = data[i][colID];                    // ID
+
+    
+
+    // CTR、CPC、CPAの値を取得（パーセント記号や通貨記号を除去）
+
+    const ctrValue = cleanNumericValue(data[i][colCTR]);
+
+    const cpcValue = cleanNumericValue(data[i][colCPC]);
+
+    const cpaValue = cleanNumericValue(data[i][colCPA]);
+
+    
+
+    // デバッグログ（最初の3行のみ）
+
+    if (i < 3) {
+
+      Logger.log(`行${rowNum}: ID=${adID}, ContentTitle=${contentTitle}`);
+
+      Logger.log(`  CTR元データ: "${data[i][colCTR]}" → ${ctrValue}`);
+
+      Logger.log(`  CPC元データ: "${data[i][colCPC]}" → ${cpcValue}`);
+
+      Logger.log(`  CPA元データ: "${data[i][colCPA]}" → ${cpaValue}`);
+
+    }
+
+    
+
+    let hasIssue = false;
+
+    const issueDetails = [];
+
+    const improvements = [];
+
+    
+
+    // CTRのチェックと色分け
+
+    if (ctrValue !== null) {
+
+      const ctrStatus = getKPIStatus('CTR', ctrValue);
+
+      if (ctrStatus) {
+
+        dataSheet.getRange(rowNum, colCTR + 1).setBackground(ctrStatus.color);
+
+        
+
+        // 健康以外の場合は白文字に
+
+        if (ctrStatus.level !== 'healthy') {
+
+          dataSheet.getRange(rowNum, colCTR + 1).setFontColor('#000000');
+
+          issueDetails.push(`CTR: ${ctrValue}% [${ctrStatus.label}]`);
+
+          improvements.push(`【CTR】${ctrStatus.action}`);
+
+          hasIssue = true;
+
+        } else {
+
+          dataSheet.getRange(rowNum, colCTR + 1).setFontColor('#000000');
+
+        }
+
+      }
+
+    }
+
+    
+
+    // CPCのチェックと色分け
+
+    if (cpcValue !== null) {
+
+      const cpcStatus = getKPIStatus('CPC', cpcValue);
+
+      if (cpcStatus) {
+
+        dataSheet.getRange(rowNum, colCPC + 1).setBackground(cpcStatus.color);
+
+        
+
+        if (cpcStatus.level !== 'healthy') {
+
+          dataSheet.getRange(rowNum, colCPC + 1).setFontColor('#000000');
+
+          issueDetails.push(`CPC: ¥${cpcValue} [${cpcStatus.label}]`);
+
+          improvements.push(`【CPC】${cpcStatus.action}`);
+
+          hasIssue = true;
+
+        } else {
+
+          dataSheet.getRange(rowNum, colCPC + 1).setFontColor('#000000');
+
+        }
+
+      }
+
+    }
+
+    
+
+    // CPAのチェックと色分け
+
+    if (cpaValue !== null) {
+
+      const cpaStatus = getKPIStatus('CPA', cpaValue);
+
+      if (cpaStatus) {
+
+        dataSheet.getRange(rowNum, colCPA + 1).setBackground(cpaStatus.color);
+
+        
+
+        if (cpaStatus.level !== 'healthy') {
+
+          dataSheet.getRange(rowNum, colCPA + 1).setFontColor('#000000');
+
+          issueDetails.push(`CPA: ¥${cpaValue} [${cpaStatus.label}]`);
+
+          improvements.push(`【CPA】${cpaStatus.action}`);
+
+          hasIssue = true;
+
+        } else {
+
+          dataSheet.getRange(rowNum, colCPA + 1).setFontColor('#000000');
+
+        }
+
+      }
+
+    }
+
+    
+
+    // 要注意・レッドラインがある場合はリストに追加
+
+    if (hasIssue) {
+
+      warnings.push({
+
+        id: adID,
+
+        contentTitle: contentTitle,
+
+        details: issueDetails,
+
+        improvements: improvements
+
+      });
+
+    }
+
+  }
+
+  
+
+  // Chatworkに通知
+
+  if (warnings.length > 0) {
+
+    sendChatworkNotification(warnings);
+
+  } else {
+
+    Logger.log('警告対象のデータはありませんでした');
+
+  }
+
+  
+
+  // 分析結果シートを作成
+
+  createSummarySheet(data);
+
+  
+
+  // KPI診断シートを作成
+
+  createKPIDiagnosisSheet(data);
+
+}
+
+/**
+
+ * KPI診断シートを作成（運用バランス診断）
+
+ */
+
+function createKPIDiagnosisSheet(data) {
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  let diagnosisSheet = ss.getSheetByName('KPI診断');
+
+  
+
+  if (!diagnosisSheet) {
+
+    diagnosisSheet = ss.insertSheet('KPI診断');
+
+  } else {
+
+    diagnosisSheet.clear();
+
+  }
+
+  
+
+  // 列のインデックス
+  // 注意: 画像表示列が追加されたため、インデックスが1つずつシフト
+
+  const colCTR = 8;  // 画像表示列追加により+1
+
+  const colCPC = 6;  // 画像表示列追加により+1
+
+  const colCPA = 11; // 画像表示列追加により+1
+
+  
+
+  // 各KPIのステータスをカウント
+
+  const statusCount = {
+
+    CTR: { healthy: 0, warning: 0, danger: 0 },
+
+    CPC: { healthy: 0, warning: 0, danger: 0 },
+
+    CPA: { healthy: 0, warning: 0, danger: 0 }
+
+  };
+
+  
+
+  // 平均値を計算
+
+  let ctrSum = 0, cpcSum = 0, cpaSum = 0;
+
+  let ctrCount = 0, cpcCount = 0, cpaCount = 0;
+
+  
+
+  data.forEach(row => {
+
+    const ctrValue = cleanNumericValue(row[colCTR]);
+
+    const cpcValue = cleanNumericValue(row[colCPC]);
+
+    const cpaValue = cleanNumericValue(row[colCPA]);
+
+    
+
+    // CTR
+
+    if (ctrValue !== null) {
+
+      const status = getKPIStatus('CTR', ctrValue);
+
+      if (status) statusCount.CTR[status.level]++;
+
+      ctrSum += ctrValue;
+
+      ctrCount++;
+
+    }
+
+    
+
+    // CPC
+
+    if (cpcValue !== null) {
+
+      const status = getKPIStatus('CPC', cpcValue);
+
+      if (status) statusCount.CPC[status.level]++;
+
+      cpcSum += cpcValue;
+
+      cpcCount++;
+
+    }
+
+    
+
+    // CPA
+
+    if (cpaValue !== null) {
+
+      const status = getKPIStatus('CPA', cpaValue);
+
+      if (status) statusCount.CPA[status.level]++;
+
+      cpaSum += cpaValue;
+
+      cpaCount++;
+
+    }
+
+  });
+
+  
+
+  const avgCTR = ctrCount > 0 ? (ctrSum / ctrCount).toFixed(2) : 0;
+
+  const avgCPC = cpcCount > 0 ? Math.round(cpcSum / cpcCount) : 0;
+
+  const avgCPA = cpaCount > 0 ? Math.round(cpaSum / cpaCount) : 0;
+
+  
+
+  // 全体のバランス判定
+
+  const overallCTRStatus = getKPIStatus('CTR', parseFloat(avgCTR));
+
+  const overallCPCStatus = getKPIStatus('CPC', avgCPC);
+
+  const overallCPAStatus = getKPIStatus('CPA', avgCPA);
+
+  
+
+  // タイトル
+
+  diagnosisSheet.appendRow(['📊 運用バランス診断']);
+
+  diagnosisSheet.getRange(1, 1, 1, 5).merge().setBackground('#4A86E8').setFontColor('#FFFFFF').setFontWeight('bold').setFontSize(14).setHorizontalAlignment('center');
+
+  
+
+  // 空行を追加（空配列ではなく空文字列を含む配列を使用）
+
+  const lastRow = diagnosisSheet.getLastRow();
+
+  diagnosisSheet.getRange(lastRow + 1, 1).setValue('');
+
+  
+
+  // ヘッダー
+
+  diagnosisSheet.appendRow(['KPI', '平均値', 'ステータス', '健康', '要注意', 'レッドライン']);
+
+  const headerRowNum = diagnosisSheet.getLastRow();
+
+  const headerRange = diagnosisSheet.getRange(headerRowNum, 1, 1, 6);
+
+  headerRange.setBackground('#4A86E8').setFontColor('#FFFFFF').setFontWeight('bold').setHorizontalAlignment('center');
+
+  
+
+  // CTR
+
+  const ctrRow = ['CTR', `${avgCTR}%`, overallCTRStatus ? overallCTRStatus.label : '-', 
+
+                  statusCount.CTR.healthy, statusCount.CTR.warning, statusCount.CTR.danger];
+
+  // ctrRowが空でないことを確認
+
+  if (ctrRow && ctrRow.length > 0) {
+
+    diagnosisSheet.appendRow(ctrRow);
+
+    if (overallCTRStatus) {
+
+      const ctrRowNum = diagnosisSheet.getLastRow();
+
+      diagnosisSheet.getRange(ctrRowNum, 3).setBackground(overallCTRStatus.color).setFontWeight('bold');
+
+    }
+
+  }
+
+  
+
+  // CPC
+
+  const cpcRow = ['CPC', `¥${avgCPC}`, overallCPCStatus ? overallCPCStatus.label : '-',
+
+                  statusCount.CPC.healthy, statusCount.CPC.warning, statusCount.CPC.danger];
+
+  // cpcRowが空でないことを確認
+
+  if (cpcRow && cpcRow.length > 0) {
+
+    diagnosisSheet.appendRow(cpcRow);
+
+    if (overallCPCStatus) {
+
+      const cpcRowNum = diagnosisSheet.getLastRow();
+
+      diagnosisSheet.getRange(cpcRowNum, 3).setBackground(overallCPCStatus.color).setFontWeight('bold');
+
+    }
+
+  }
+
+  
+
+  // CPA
+
+  const cpaRow = ['CPA', `¥${avgCPA}`, overallCPAStatus ? overallCPAStatus.label : '-',
+
+                  statusCount.CPA.healthy, statusCount.CPA.warning, statusCount.CPA.danger];
+
+  // cpaRowが空でないことを確認
+
+  if (cpaRow && cpaRow.length > 0) {
+
+    diagnosisSheet.appendRow(cpaRow);
+
+    if (overallCPAStatus) {
+
+      const cpaRowNum = diagnosisSheet.getLastRow();
+
+      diagnosisSheet.getRange(cpaRowNum, 3).setBackground(overallCPAStatus.color).setFontWeight('bold');
+
+    }
+
+  }
+
+  
+
+  // 空行を追加（空配列ではなく空文字列を含む配列を使用）
+
+  const lastRowAfterCPA = diagnosisSheet.getLastRow();
+
+  diagnosisSheet.getRange(lastRowAfterCPA + 1, 1).setValue('');
+
+  
+
+  // 総合診断
+
+  diagnosisSheet.appendRow(['■ 総合診断']);
+
+  const diagnosisTitleRow = diagnosisSheet.getLastRow();
+
+  diagnosisSheet.getRange(diagnosisTitleRow, 1).setFontWeight('bold').setFontSize(12);
+
+  
+
+  let overallMessage = '';
+
+  const dangerCount = statusCount.CTR.danger + statusCount.CPC.danger + statusCount.CPA.danger;
+
+  const warningCount = statusCount.CTR.warning + statusCount.CPC.warning + statusCount.CPA.warning;
+
+  
+
+  if (dangerCount > 0) {
+
+    overallMessage = `⚠️ レッドライン広告が${dangerCount}件あります。至急、訴求・ターゲティング・LP の全面見直しが必要です。`;
+
+  } else if (warningCount > 0) {
+
+    overallMessage = `⚠ 要注意広告が${warningCount}件あります。クリエイティブとLP の改善を推奨します。`;
+
+  } else {
+
+    overallMessage = `✅ 全体的に健康な運用状態です。現在の訴求軸を拡張してスケール配信を検討しましょう。`;
+
+  }
+
+  
+
+  // overallMessageが空でないことを確認
+
+  if (overallMessage && overallMessage.trim() !== '') {
+
+    diagnosisSheet.appendRow([overallMessage]);
+
+    const messageRow = diagnosisSheet.getLastRow();
+
+    diagnosisSheet.getRange(messageRow, 1, 1, 6).merge().setWrap(true);
+
+  }
+
+  
+
+  // 空行を追加（空配列ではなく空文字列を含む配列を使用）
+
+  const lastRowAfterMessage = diagnosisSheet.getLastRow();
+
+  diagnosisSheet.getRange(lastRowAfterMessage + 1, 1).setValue('');
+
+  
+
+  // 改善アクション
+
+  diagnosisSheet.appendRow(['💡 推奨アクション']);
+
+  const actionTitleRow = diagnosisSheet.getLastRow();
+
+  diagnosisSheet.getRange(actionTitleRow, 1).setFontWeight('bold').setFontSize(12);
+
+  
+
+  if (overallCTRStatus && overallCTRStatus.level !== 'healthy') {
+
+    diagnosisSheet.appendRow([`【CTR】${overallCTRStatus.action}`]);
+
+  }
+
+  if (overallCPCStatus && overallCPCStatus.level !== 'healthy') {
+
+    diagnosisSheet.appendRow([`【CPC】${overallCPCStatus.action}`]);
+
+  }
+
+  if (overallCPAStatus && overallCPAStatus.level !== 'healthy') {
+
+    diagnosisSheet.appendRow([`【CPA】${overallCPAStatus.action}`]);
+
+  }
+
+  
+
+  // 列幅を調整
+
+  for (let i = 1; i <= 6; i++) {
+
+    diagnosisSheet.autoResizeColumn(i);
+
+  }
+
+  
+
+  Logger.log('KPI診断シートを作成しました');
+
+}
+
+/**
+
+ * 数値から不要な文字を除去して数値に変換
+
+ * @param {string|number} value - 変換する値
+
+ * @return {number|null} 変換された数値、変換できない場合はnull
+
+ */
+
+function cleanNumericValue(value) {
+
+  if (value === null || value === undefined || value === '') {
+
+    return null;
+
+  }
+
+  
+
+  // 既に数値の場合
+
+  if (typeof value === 'number') {
+
+    return value;
+
+  }
+
+  
+
+  // 文字列の場合、記号を除去
+
+  const cleaned = String(value)
+
+    .replace(/[%$¥,円]/g, '')  // パーセント、ドル記号、円記号、カンマを除去
+
+    .trim();
+
+  
+
+  const num = parseFloat(cleaned);
+
+  return isNaN(num) ? null : num;
+
+}
+
+/**
+
+ * 分析結果のサマリーシートを作成
+
+ */
+
+function createSummarySheet(data) {
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  let summarySheet = ss.getSheetByName('分析サマリー');
+
+  
+
+  if (!summarySheet) {
+
+    summarySheet = ss.insertSheet('分析サマリー');
+
+  } else {
+
+    summarySheet.clear();
+
+  }
+
+  
+
+  // ヘッダー
+
+  summarySheet.appendRow(['項目', '値']);
+
+  summarySheet.getRange(1, 1, 1, 2).setBackground('#4A86E8').setFontColor('#FFFFFF').setFontWeight('bold');
+
+  
+
+  // 列のインデックス（SHEET_HEADER_TITLESの順序に対応）
+  // 注意: 画像表示列が追加されたため、インデックスが1つずつシフト
+
+  const colAmountSpent = 4;      // 配信金額 (Amount Spent) - 画像表示列追加により+1
+
+  const colImpressions = 5;      // Impressions (Impressions) - 画像表示列追加により+1
+
+  const colClicks = 7;           // Clicks (Clicks) - 画像表示列追加により+1
+
+  const colConversions = 9;      // Conversions (Click) (Conversions (Click)) - 画像表示列追加により+1
+
+  
+
+  // 集計データを計算
+
+  let totalClicks = 0;
+
+  let totalImpressions = 0;
+
+  let totalCost = 0;
+
+  let totalConversions = 0;
+
+  let validRows = 0;
+
+  
+
+  data.forEach(row => {
+
+    const clicks = cleanNumericValue(row[colClicks]) || 0;
+
+    const impressions = cleanNumericValue(row[colImpressions]) || 0;
+
+    const cost = cleanNumericValue(row[colAmountSpent]) || 0;
+
+    const conversions = cleanNumericValue(row[colConversions]) || 0;
+
+    
+
+    if (clicks > 0 || impressions > 0) {
+
+      totalClicks += clicks;
+
+      totalImpressions += impressions;
+
+      totalCost += cost;
+
+      totalConversions += conversions;
+
+      validRows++;
+
+    }
+
+  });
+
+  
+
+  const avgCTR = totalImpressions > 0 ? (totalClicks / totalImpressions * 100).toFixed(2) : 0;
+
+  const avgCPC = totalClicks > 0 ? (totalCost / totalClicks).toFixed(0) : 0;
+
+  const avgCPA = totalConversions > 0 ? (totalCost / totalConversions).toFixed(0) : 0;
+
+  
+
+  summarySheet.appendRow(['総広告数', validRows]);
+
+  summarySheet.appendRow(['総クリック数', totalClicks.toLocaleString()]);
+
+  summarySheet.appendRow(['総インプレッション数', totalImpressions.toLocaleString()]);
+
+  summarySheet.appendRow(['総コスト', '¥' + totalCost.toLocaleString()]);
+
+  summarySheet.appendRow(['総コンバージョン数', totalConversions.toLocaleString()]);
+
+  summarySheet.appendRow(['平均CTR', avgCTR + '%']);
+
+  summarySheet.appendRow(['平均CPC', '¥' + Number(avgCPC).toLocaleString()]);
+
+  summarySheet.appendRow(['平均CPA', '¥' + Number(avgCPA).toLocaleString()]);
+
+  
+
+  // 列幅を調整
+
+  summarySheet.autoResizeColumn(1);
+
+  summarySheet.autoResizeColumn(2);
+
+}
+
+/**
+
+ * Chatworkに通知を送信
+
+ */
+
+function sendChatworkNotification(warnings) {
+
+  if (!CHATWORK_API_TOKEN || !CHATWORK_ROOM_ID) {
+
+    Logger.log('Chatworkの設定がされていません');
+
+    return;
+
+  }
+
+  
+
+  // メッセージを作成
+
+  let message = '[info][title]📊 広告KPI診断レポート[/title]';
+
+  message += '要注意・レッドラインの広告が検出されました。\n\n';
+
+  
+
+  warnings.forEach((warning, index) => {
+
+    const displayText = warning.id ? `ID: ${warning.id}` : (warning.contentTitle || '(不明)');
+
+    message += `━━━━━━━━━━━━━━━━━\n`;
+
+    message += `【${index + 1}】${displayText}\n`;
+
+    if (warning.contentTitle && warning.id) {
+
+      message += `📝 ${warning.contentTitle}\n`;
+
+    }
+
+    message += '\n';
+
+    
+
+    // KPI状況
+
+    message += `■ KPI状況\n`;
+
+    warning.details.forEach(detail => {
+
+      message += `  ${detail}\n`;
+
+    });
+
+    message += '\n';
+
+    
+
+    // 改善アクション
+
+    if (warning.improvements && warning.improvements.length > 0) {
+
+      message += `💡 改善アクション\n`;
+
+      warning.improvements.forEach(improvement => {
+
+        message += `  ${improvement}\n`;
+
+      });
+
+    }
+
+    message += '\n';
+
+  });
+
+  
+
+  message += `\n確認日時: ${Utilities.formatDate(new Date(), 'JST', 'yyyy/MM/dd HH:mm:ss')}`;
+
+  message += '[/info]';
+
+  
+
+  // Chatwork APIを呼び出し
+
+  const url = `https://api.chatwork.com/v2/rooms/${CHATWORK_ROOM_ID}/messages`;
+
+  const options = {
+
+    'method': 'post',
+
+    'headers': {
+
+      'X-ChatWorkToken': CHATWORK_API_TOKEN
+
+    },
+
+    'payload': {
+
+      'body': message
+
+    }
+
+  };
+
+  
+
+  try {
+
+    UrlFetchApp.fetch(url, options);
+
+    Logger.log('Chatworkに通知を送信しました');
+
+  } catch (error) {
+
+    Logger.log('Chatwork通知の送信に失敗: ' + error.toString());
+
+  }
+
+}
+
+/**
+
+ * エラー通知を送信
+
+ */
+
+function sendErrorNotification(error) {
+
+  if (!CHATWORK_API_TOKEN || !CHATWORK_ROOM_ID) {
+
+    return;
+
+  }
+
+  
+
+  const message = `[info][title]広告運用DXシステムエラー[/title]エラーが発生しました:\n${error.toString()}[/info]`;
+
+  
+
+  const url = `https://api.chatwork.com/v2/rooms/${CHATWORK_ROOM_ID}/messages`;
+
+  const options = {
+
+    'method': 'post',
+
+    'headers': {
+
+      'X-ChatWorkToken': CHATWORK_API_TOKEN
+
+    },
+
+    'payload': {
+
+      'body': message
+
+    }
+
+  };
+
+  
+
+  try {
+
+    UrlFetchApp.fetch(url, options);
+
+  } catch (e) {
+
+    Logger.log('エラー通知の送信に失敗: ' + e.toString());
+
+  }
+
+}
+
