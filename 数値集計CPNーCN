@@ -2071,34 +2071,7 @@ function generateWeeklyReport() {
           'lp遷移率'
         ]);
         
-        // キャンペーン名を取得（最初のデータ行から）
-        let campaignName = '';
-        for (let r = 1; r < rows.length; r++) {
-          const row = rows[r];
-          if (!row || row.length === 0) continue;
-          const costRaw = cleanNumericValue(idxCost >= 0 ? row[idxCost] : null) || 0;
-          if (costRaw > 0) {
-            campaignName = idxCampaignName >= 0 ? String(row[idxCampaignName] || '') : '';
-            break;
-          }
-        }
-        
-        // キャンペーン名を表示
-        if (campaignName) {
-          sheet.getRange(rowCursor, startCol).setValue(campaignName).setFontWeight('bold');
-          rowCursor++;
-        }
-        
-        // ヘッダー（A列: 空、B列: 画像表示、C列: テキスト...）
-        const tableHeaderRow = rowCursor;
-        sheet.getRange(rowCursor, 1, 1, 13).setValues([[
-          '', '画像表示', 'テキスト', '軸', '配信金額', 'CPC', 'Imp', 'Click', 'CTR', 'CV', 'CVR', 'CAC', 'LP遷移数'
-        ]]).setBackground('#000000').setFontColor('#FFFFFF').setFontWeight('bold').setHorizontalAlignment('center');
-        // LP遷移率のヘッダーを追加（14列目）
-        sheet.getRange(rowCursor, 14).setValue('LP遷移率').setBackground('#000000').setFontColor('#FFFFFF').setFontWeight('bold').setHorizontalAlignment('center');
-        rowCursor++;
-        
-        const values = [];
+        const campaignGroups = new Map();
         for (let r = 1; r < rows.length; r++) {
           const row = rows[r];
           if (!row || row.length === 0) continue;
@@ -2107,6 +2080,7 @@ function generateWeeklyReport() {
           const costRaw = cleanNumericValue(idxCost >= 0 ? row[idxCost] : null) || 0;
           if (!contentTitle || costRaw <= 0) continue;
           
+          const campaignName = idxCampaignName >= 0 ? String(row[idxCampaignName] || '') : '';
           const cost = Math.round(costRaw * 1.1 / 0.8);
           const imp = Math.round(cleanNumericValue(idxImp >= 0 ? row[idxImp] : null) || 0);
           const click = Math.round(cleanNumericValue(idxClick >= 0 ? row[idxClick] : null) || 0);
@@ -2116,61 +2090,89 @@ function generateWeeklyReport() {
           const lpRateRaw = idxLpRateCr >= 0 ? String(row[idxLpRateCr] || '') : '';
           const lpRateDisplay = formatPercentLabel_(lpRateRaw);
           
-          values.push([
+          if (!campaignGroups.has(campaignName)) {
+            campaignGroups.set(campaignName, []);
+          }
+          campaignGroups.get(campaignName).push({
             image,
-            '',
             contentTitle,
-            '',
             cost,
-            '',
             imp,
             click,
-            '',
             conv,
-            '',
-            '',
             lpTransitions,
             lpRateDisplay
-          ]);
+          });
         }
         
-        if (values.length > 0) {
-          const dataStartRow = rowCursor;
-          sheet.getRange(rowCursor, 1, values.length, 14).setValues(values);
-          const imgFormulas = values.map((_, i) => [`=IF(A${rowCursor + i}<>"", IMAGE(A${rowCursor + i}, 1), "")`]);
-          sheet.getRange(rowCursor, 2, values.length, 1).setFormulas(imgFormulas);
-          applyMetricFormulas_(sheet, dataStartRow, values.length, {
-            costCol: 5,
-            clickCol: 8,
-            impCol: 7,
-            convCol: 10,
-            cpcCol: 6,
-            ctrCol: 9,
-            cvrCol: 11,
-            cacCol: 12,
-            cacZeroText: '"-"'
-          });
-          sheet.getRange(dataStartRow, 5, values.length, 1).setNumberFormat('"¥"#,##0');
-          sheet.getRange(dataStartRow, 6, values.length, 1).setNumberFormat('"¥"#,##0.0');
-          sheet.getRange(dataStartRow, 7, values.length, 1).setNumberFormat('#,##0');
-          sheet.getRange(dataStartRow, 8, values.length, 1).setNumberFormat('#,##0');
-          sheet.getRange(dataStartRow, 9, values.length, 1).setNumberFormat('0.00%');
-          sheet.getRange(dataStartRow, 10, values.length, 1).setNumberFormat('#,##0');
-          sheet.getRange(dataStartRow, 11, values.length, 1).setNumberFormat('0.00%');
-          sheet.getRange(dataStartRow, 12, values.length, 1).setNumberFormat('"¥"#,##0');
-          sheet.getRange(dataStartRow, 13, values.length, 1).setNumberFormat('#,##0');
-          sheet.getRange(dataStartRow, 14, values.length, 1).setNumberFormat('0.00%');
-          rowCursor += values.length;
-        }
-        const tableRows = rowCursor - tableHeaderRow;
-        sheet.getRange(tableHeaderRow, 1, tableRows, 14)
-          .setBorder(true, true, true, true, true, true);
-        sheet.getRange(tableHeaderRow, 1, 1, 14).setHorizontalAlignment('center');
-        const crDataRows = tableRows - 1;
-        if (crDataRows > 0) {
-          sheet.getRange(tableHeaderRow + 1, 1, crDataRows, 3).setHorizontalAlignment('left');
-          sheet.getRange(tableHeaderRow + 1, 4, crDataRows, 1).setHorizontalAlignment('center');
-          sheet.getRange(tableHeaderRow + 1, 5, crDataRows, 10).setHorizontalAlignment('right');
+        for (const [campaignName, entries] of campaignGroups) {
+          if (campaignName) {
+            sheet.getRange(rowCursor, startCol).setValue(campaignName).setFontWeight('bold');
+            rowCursor++;
+          }
+          const tableHeaderRow = rowCursor;
+          sheet.getRange(rowCursor, 1, 1, 13).setValues([[
+            '', '画像表示', 'テキスト', '軸', '配信金額', 'CPC', 'Imp', 'Click', 'CTR', 'CV', 'CVR', 'CAC', 'LP遷移数'
+          ]]).setBackground('#000000').setFontColor('#FFFFFF').setFontWeight('bold').setHorizontalAlignment('center');
+          sheet.getRange(rowCursor, 14).setValue('LP遷移率').setBackground('#000000').setFontColor('#FFFFFF').setFontWeight('bold').setHorizontalAlignment('center');
+          rowCursor++;
+          
+          const values = entries.map(entry => ([
+            entry.image,
+            '',
+            entry.contentTitle,
+            '',
+            entry.cost,
+            '',
+            entry.imp,
+            entry.click,
+            '',
+            entry.conv,
+            '',
+            '',
+            entry.lpTransitions,
+            entry.lpRateDisplay
+          ]));
+          
+          if (values.length > 0) {
+            const dataStartRow = rowCursor;
+            sheet.getRange(rowCursor, 1, values.length, 14).setValues(values);
+            const imgFormulas = values.map((_, i) => [`=IF(A${rowCursor + i}<>"", IMAGE(A${rowCursor + i}, 1), "")`]);
+            sheet.getRange(rowCursor, 2, values.length, 1).setFormulas(imgFormulas);
+            applyMetricFormulas_(sheet, dataStartRow, values.length, {
+              costCol: 5,
+              clickCol: 8,
+              impCol: 7,
+              convCol: 10,
+              cpcCol: 6,
+              ctrCol: 9,
+              cvrCol: 11,
+              cacCol: 12,
+              cacZeroText: '"-"'
+            });
+            sheet.getRange(dataStartRow, 5, values.length, 1).setNumberFormat('"¥"#,##0');
+            sheet.getRange(dataStartRow, 6, values.length, 1).setNumberFormat('"¥"#,##0.0');
+            sheet.getRange(dataStartRow, 7, values.length, 1).setNumberFormat('#,##0');
+            sheet.getRange(dataStartRow, 8, values.length, 1).setNumberFormat('#,##0');
+            sheet.getRange(dataStartRow, 9, values.length, 1).setNumberFormat('0.00%');
+            sheet.getRange(dataStartRow, 10, values.length, 1).setNumberFormat('#,##0');
+            sheet.getRange(dataStartRow, 11, values.length, 1).setNumberFormat('0.00%');
+            sheet.getRange(dataStartRow, 12, values.length, 1).setNumberFormat('"¥"#,##0');
+            sheet.getRange(dataStartRow, 13, values.length, 1).setNumberFormat('#,##0');
+            sheet.getRange(dataStartRow, 14, values.length, 1).setNumberFormat('0.00%');
+            rowCursor += values.length;
+          }
+          const tableRows = rowCursor - tableHeaderRow;
+          sheet.getRange(tableHeaderRow, 1, tableRows, 14)
+            .setBorder(true, true, true, true, true, true);
+          sheet.getRange(tableHeaderRow, 1, 1, 14).setHorizontalAlignment('center');
+          const crDataRows = tableRows - 1;
+          if (crDataRows > 0) {
+            sheet.getRange(tableHeaderRow + 1, 1, crDataRows, 3).setHorizontalAlignment('left');
+            sheet.getRange(tableHeaderRow + 1, 4, crDataRows, 1).setHorizontalAlignment('center');
+            sheet.getRange(tableHeaderRow + 1, 5, crDataRows, 10).setHorizontalAlignment('right');
+          }
+          rowCursor += 1; // blank row between campaigns
         }
       }
       rowCursor += 1;
