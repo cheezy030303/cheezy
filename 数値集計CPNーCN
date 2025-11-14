@@ -1899,9 +1899,9 @@ function generateWeeklyReport() {
           const imp = cleanNumericValue(idxImp >= 0 ? row[idxImp] : null) || 0;
           const click = cleanNumericValue(idxClick >= 0 ? row[idxClick] : null) || 0;
           const conv = cleanNumericValue(idxConv >= 0 ? row[idxConv] : null) || 0;
-          const lpTransitions = cleanNumericValue(idxLpTransitions >= 0 ? row[idxLpTransitions] : null) || 0;
+          const lpTransitionsRaw = idxLpTransitions >= 0 ? String(row[idxLpTransitions] || '') : '';
           const lpRateRaw = idxLpRate >= 0 ? String(row[idxLpRate] || '') : '';
-          const oyatsuDiagnosis = cleanNumericValue(idxOyatsuDiagnosis >= 0 ? row[idxOyatsuDiagnosis] : null) || 0;
+          const oyatsuDiagnosisRaw = idxOyatsuDiagnosis >= 0 ? String(row[idxOyatsuDiagnosis] || '') : '';
           const oyatsuDiagnosisRateRaw = idxOyatsuDiagnosisRate >= 0 ? String(row[idxOyatsuDiagnosisRate] || '') : '';
           
           if (!campaignMap.has(campaignName)) {
@@ -1910,9 +1910,9 @@ function generateWeeklyReport() {
               imp: 0,
               click: 0,
               conv: 0,
-              lpTransitions: 0,
+              lpTransitions: '',
               lpRate: '',
-              oyatsuDiagnosis: 0,
+              oyatsuDiagnosis: '',
               oyatsuDiagnosisRate: ''
             });
           }
@@ -1921,13 +1921,16 @@ function generateWeeklyReport() {
           agg.imp += imp;
           agg.click += click;
           agg.conv += conv;
-          agg.lpTransitions = lpTransitions;
-          if (lpRateRaw) {
+          if (lpTransitionsRaw !== '') {
+            agg.lpTransitions = lpTransitionsRaw;
+          }
+          if (lpRateRaw !== '') {
             agg.lpRate = lpRateRaw;
           }
-          agg.oyatsuDiagnosis = oyatsuDiagnosis;
-          // おやつ診断率は最後の値を使用（Total行から取得した値がある場合はそれを使用）
-          if (oyatsuDiagnosisRateRaw) {
+          if (oyatsuDiagnosisRaw !== '') {
+            agg.oyatsuDiagnosis = oyatsuDiagnosisRaw;
+          }
+          if (oyatsuDiagnosisRateRaw !== '') {
             agg.oyatsuDiagnosisRate = oyatsuDiagnosisRateRaw;
           }
         }
@@ -1973,10 +1976,10 @@ function generateWeeklyReport() {
           Math.round(data.conv),
           '',
           '',
-          Math.round(data.lpTransitions || 0),
-          '',
-          data.oyatsuDiagnosis || 0,
-          ''
+          data.lpTransitions || '',
+          formatPercentLabel_(data.lpRate || ''),
+          data.oyatsuDiagnosis || '',
+          formatPercentLabel_(data.oyatsuDiagnosisRate || '')
         ]));
         if (values.length > 0) {
           const dataStartRow = rowCursor;
@@ -2002,9 +2005,6 @@ function generateWeeklyReport() {
           sheet.getRange(dataStartRow, startCol + 7, values.length, 1).setNumberFormat('#,##0');
           sheet.getRange(dataStartRow, startCol + 8, values.length, 1).setNumberFormat('0.00%');
           sheet.getRange(dataStartRow, startCol + 9, values.length, 1).setNumberFormat('"¥"#,##0');
-          sheet.getRange(dataStartRow, startCol + 10, values.length, 1).setNumberFormat('#,##0');
-          sheet.getRange(dataStartRow, startCol + 11, values.length, 1).setNumberFormat('0.00%');
-          sheet.getRange(dataStartRow, startCol + 12, values.length, 1).setNumberFormat('#,##0');
           rowCursor += values.length;
         }
       }
@@ -2054,22 +2054,54 @@ function generateWeeklyReport() {
         const idxClick = indices[6];
         const idxConv = indices[8];
         
-        // LP遷移数の列を取得
+        // LP遷移数の列を取得（より確実な検索）
         const headerNormalized = header.map(normalizeHeader_);
-        const idxLpTransitions = findColumnIndexByKeywords_(headerNormalized, [
-          '01 lp gohobi conversions (click)',
-          'lp gohobi conversions (click)',
-          'lp conversions (click)',
-          'lp transitions',
-          'lp遷移数'
-        ]);
-        const idxLpRateCr = findColumnIndexByKeywords_(headerNormalized, [
-          '01 lp gohobi conversion rate (click)',
-          'lp gohobi conversion rate (click)',
-          'lp conversion rate (click)',
-          'lp conversion rate',
-          'lp遷移率'
-        ]);
+        let idxLpTransitions = -1;
+        let idxLpRateCr = -1;
+        let idxOyatsuDiagnosis = -1;
+        let idxOyatsuDiagnosisRate = -1;
+        
+        // 直接ヘッダーを検索
+        for (let i = 0; i < header.length; i++) {
+          const h = String(header[i] || '').toLowerCase();
+          const hNormalized = normalizeHeader_(h);
+          
+          if (idxLpTransitions < 0 && (
+            h.includes('01 lp gohobi conversions (click)') ||
+            hNormalized.includes('01lpgobobiconversions(click)') ||
+            hNormalized.includes('lpgobobiconversions')
+          )) {
+            idxLpTransitions = i;
+          }
+          
+          if (idxLpRateCr < 0 && (
+            h.includes('01 lp gohobi conversion rate (click)') ||
+            hNormalized.includes('01lpgobobiconversionrate(click)') ||
+            hNormalized.includes('lpgobobiconversionrate')
+          )) {
+            idxLpRateCr = i;
+          }
+          
+          if (idxOyatsuDiagnosis < 0 && (
+            h.includes('021rissucounter') && h.includes('splash') && h.includes('conversions') ||
+            hNormalized.includes('021rissucounter') && hNormalized.includes('splash') && hNormalized.includes('conversions')
+          )) {
+            idxOyatsuDiagnosis = i;
+          }
+          
+          if (idxOyatsuDiagnosisRate < 0 && (
+            h.includes('021rissucounter') && h.includes('splash') && h.includes('conversion rate') ||
+            hNormalized.includes('021rissucounter') && hNormalized.includes('splash') && hNormalized.includes('conversionrate')
+          )) {
+            idxOyatsuDiagnosisRate = i;
+          }
+        }
+        
+        // デバッグログ
+        Logger.log(`CR別進捗: LP遷移数列インデックス=${idxLpTransitions}, LP遷移率列インデックス=${idxLpRateCr}, おやつ診断列インデックス=${idxOyatsuDiagnosis}, おやつ診断率列インデックス=${idxOyatsuDiagnosisRate}`);
+        if (idxLpTransitions < 0 || idxLpRateCr < 0) {
+          Logger.log(`ヘッダー全体: ${header.join(' | ')}`);
+        }
         
         const campaignGroups = new Map();
         for (let r = 1; r < rows.length; r++) {
@@ -2086,9 +2118,19 @@ function generateWeeklyReport() {
           const click = Math.round(cleanNumericValue(idxClick >= 0 ? row[idxClick] : null) || 0);
           const conv = Math.round(cleanNumericValue(idxConv >= 0 ? row[idxConv] : null) || 0);
           const image = idxImage >= 0 ? String(row[idxImage] || '') : '';
-          const lpTransitions = Math.round(cleanNumericValue(idxLpTransitions >= 0 ? row[idxLpTransitions] : null) || 0);
+          const lpTransitionsRaw = idxLpTransitions >= 0 ? row[idxLpTransitions] : null;
+          const lpTransitions = cleanNumericValue(lpTransitionsRaw) || 0;
           const lpRateRaw = idxLpRateCr >= 0 ? String(row[idxLpRateCr] || '') : '';
           const lpRateDisplay = formatPercentLabel_(lpRateRaw);
+          const oyatsuDiagnosisRaw = idxOyatsuDiagnosis >= 0 ? row[idxOyatsuDiagnosis] : null;
+          const oyatsuDiagnosis = cleanNumericValue(oyatsuDiagnosisRaw) || 0;
+          const oyatsuDiagnosisRateRaw = idxOyatsuDiagnosisRate >= 0 ? String(row[idxOyatsuDiagnosisRate] || '') : '';
+          const oyatsuDiagnosisRateDisplay = formatPercentLabel_(oyatsuDiagnosisRateRaw);
+          
+          // デバッグログ（最初の数行のみ）
+          if (r <= 3) {
+            Logger.log(`行${r}: LP遷移数=${lpTransitionsRaw}->${lpTransitions}, LP遷移率=${lpRateRaw}->${lpRateDisplay}, おやつ診断=${oyatsuDiagnosisRaw}->${oyatsuDiagnosis}, おやつ診断率=${oyatsuDiagnosisRateRaw}->${oyatsuDiagnosisRateDisplay}`);
+          }
           
           if (!campaignGroups.has(campaignName)) {
             campaignGroups.set(campaignName, []);
@@ -2100,8 +2142,10 @@ function generateWeeklyReport() {
             imp,
             click,
             conv,
-            lpTransitions,
-            lpRateDisplay
+            lpTransitions: lpTransitions,
+            lpRateDisplay,
+            oyatsuDiagnosis: oyatsuDiagnosis,
+            oyatsuDiagnosisRateDisplay
           });
         }
         
@@ -2114,7 +2158,8 @@ function generateWeeklyReport() {
           sheet.getRange(rowCursor, 1, 1, 13).setValues([[
             '', '画像表示', 'テキスト', '軸', '配信金額', 'CPC', 'Imp', 'Click', 'CTR', 'CV', 'CVR', 'CAC', 'LP遷移数'
           ]]).setBackground('#000000').setFontColor('#FFFFFF').setFontWeight('bold').setHorizontalAlignment('center');
-          sheet.getRange(rowCursor, 14).setValue('LP遷移率').setBackground('#000000').setFontColor('#FFFFFF').setFontWeight('bold').setHorizontalAlignment('center');
+          sheet.getRange(rowCursor, 14, 1, 3).setValues([['LP遷移率', 'おやつ診断', 'おやつ診断率']])
+            .setBackground('#000000').setFontColor('#FFFFFF').setFontWeight('bold').setHorizontalAlignment('center');
           rowCursor++;
           
           const values = entries.map(entry => ([
@@ -2131,12 +2176,14 @@ function generateWeeklyReport() {
             '',
             '',
             entry.lpTransitions,
-            entry.lpRateDisplay
+            entry.lpRateDisplay,
+            entry.oyatsuDiagnosis,
+            entry.oyatsuDiagnosisRateDisplay
           ]));
           
           if (values.length > 0) {
             const dataStartRow = rowCursor;
-            sheet.getRange(rowCursor, 1, values.length, 14).setValues(values);
+            sheet.getRange(rowCursor, 1, values.length, 16).setValues(values);
             const imgFormulas = values.map((_, i) => [`=IF(A${rowCursor + i}<>"", IMAGE(A${rowCursor + i}, 1), "")`]);
             sheet.getRange(rowCursor, 2, values.length, 1).setFormulas(imgFormulas);
             applyMetricFormulas_(sheet, dataStartRow, values.length, {
@@ -2159,18 +2206,18 @@ function generateWeeklyReport() {
             sheet.getRange(dataStartRow, 11, values.length, 1).setNumberFormat('0.00%');
             sheet.getRange(dataStartRow, 12, values.length, 1).setNumberFormat('"¥"#,##0');
             sheet.getRange(dataStartRow, 13, values.length, 1).setNumberFormat('#,##0');
-            sheet.getRange(dataStartRow, 14, values.length, 1).setNumberFormat('0.00%');
+            sheet.getRange(dataStartRow, 15, values.length, 1).setNumberFormat('#,##0');
             rowCursor += values.length;
           }
           const tableRows = rowCursor - tableHeaderRow;
-          sheet.getRange(tableHeaderRow, 1, tableRows, 14)
+          sheet.getRange(tableHeaderRow, 1, tableRows, 16)
             .setBorder(true, true, true, true, true, true);
-          sheet.getRange(tableHeaderRow, 1, 1, 14).setHorizontalAlignment('center');
+          sheet.getRange(tableHeaderRow, 1, 1, 16).setHorizontalAlignment('center');
           const crDataRows = tableRows - 1;
           if (crDataRows > 0) {
             sheet.getRange(tableHeaderRow + 1, 1, crDataRows, 3).setHorizontalAlignment('left');
             sheet.getRange(tableHeaderRow + 1, 4, crDataRows, 1).setHorizontalAlignment('center');
-            sheet.getRange(tableHeaderRow + 1, 5, crDataRows, 10).setHorizontalAlignment('right');
+            sheet.getRange(tableHeaderRow + 1, 5, crDataRows, 12).setHorizontalAlignment('right');
           }
           rowCursor += 1; // blank row between campaigns
         }
