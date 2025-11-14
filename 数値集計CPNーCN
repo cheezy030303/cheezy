@@ -48,7 +48,7 @@ const CHATWORK_API_TOKEN = PropertiesService.getScriptProperties().getProperty('
 
 const CHATWORK_ROOM_ID = PropertiesService.getScriptProperties().getProperty('CHATWORK_ROOM_ID');
 
-const CSV_FOLDER_ID = PropertiesService.getScriptProperties().getProperty('CSV_FOLDER_ID') || '1077Nlpr7Zgm7U0N-PeBB-k1Hhw4Xczoq';
+const CSV_FOLDER_ID = PropertiesService.getScriptProperties().getProperty('CSV_FOLDER_ID') || '1ZJ8u8Y_5g2jvRVKps9-Itrnws0utAtbA';
 
 // KPI基準値の設定（広告KPI表に基づく）
 
@@ -1710,7 +1710,7 @@ function checkNewCSVFiles() {
  */
 function generateWeeklyReport() {
   try {
-    const fallbackId = '1QnBZuFKND26CYaX2Y79BjDTyyERKD-6F';
+    const fallbackId = '1ZJ8u8Y_5g2jvRVKps9-Itrnws0utAtbA';
     const folderIds = [];
     if (CSV_FOLDER_ID) folderIds.push(CSV_FOLDER_ID);
     if (!folderIds.includes(fallbackId)) folderIds.push(fallbackId);
