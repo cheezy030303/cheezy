@@ -1,0 +1,903 @@
+/**
+ * 議事録自動登録システム
+ * 会社のGoogleカレンダーから★印がついたマーケティング部のミーティングを抽出し、
+ * MKシステムの議事録に自動登録する
+ */
+
+/**
+ * メイン処理：カレンダーからイベントを取得し、スプレッドシートに記録してからMKシステムに登録
+ */
+function main() {
+  try {
+    // 設定を読み込み
+    const config = getConfig();
+    
+    // 対象期間：前日のカレンダーをチェック
+    // 前日の00:00:00から23:59:59まで
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // 今日の00:00:00
+    
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1); // 前日の00:00:00
+    
+    const startDate = new Date(yesterday);
+    startDate.setHours(0, 0, 0, 0);
+    
+    const endDate = new Date(yesterday);
+    endDate.setHours(23, 59, 59, 999); // 前日の23:59:59
+    
+    Logger.log(`対象期間: ${startDate.toLocaleString('ja-JP')} ～ ${endDate.toLocaleString('ja-JP')}`);
+    
+    // カレンダーイベントを取得
+    const events = getCalendarEvents(startDate, endDate);
+    
+    // ★印がついていて、マーケティング部のメンバーが参加しているイベントをフィルタリング
+    const targetEvents = filterMarketingEvents(events, config.MARKETING_TEAM);
+    
+    Logger.log(`対象イベント数: ${targetEvents.length}`);
+    
+    // スプレッドシートを取得または作成
+    const spreadsheet = getOrCreateSpreadsheet(config);
+    const sheet = getOrCreateSheet(spreadsheet, config.SHEET_NAME);
+    
+    // ヘッダー行を設定（初回のみ）
+    setupSheetHeaders(sheet);
+    
+    // すべての会議データを抽出
+    const allMeetingData = [];
+    for (const event of targetEvents) {
+      const meetingData = extractMeetingData(event);
+      allMeetingData.push(meetingData);
+    }
+    
+    // スプレッドシートに書き込み
+    if (allMeetingData.length > 0) {
+      writeToSpreadsheet(sheet, allMeetingData);
+      Logger.log(`${allMeetingData.length}件のデータをスプレッドシートに記録しました`);
+      Logger.log(`スプレッドシートURL: ${spreadsheet.getUrl()}`);
+    }
+    
+    // MKシステムに登録（エラーが発生してもスプレッドシートへの記録は完了している）
+    let mkSystemSuccessCount = 0;
+    let mkSystemErrorCount = 0;
+    
+    if (allMeetingData.length > 0) {
+      // MKシステムの設定が有効かチェック
+      if (config.MK_SYSTEM.API_ENDPOINT && 
+          config.MK_SYSTEM.API_ENDPOINT !== 'https://mk-system.example.com/api/meetings') {
+        Logger.log('MKシステムへの登録を開始します');
+        for (const meetingData of allMeetingData) {
+          try {
+            const result = registerToMKSystem(meetingData, config.MK_SYSTEM);
+            if (result && result.success) {
+              mkSystemSuccessCount++;
+            } else {
+              mkSystemErrorCount++;
+            }
+          } catch (error) {
+            mkSystemErrorCount++;
+            Logger.log(`MKシステム登録エラー（処理は続行します）: ${meetingData.clientName} - ${error.toString()}`);
+          }
+        }
+        Logger.log(`MKシステム登録結果: 成功 ${mkSystemSuccessCount}件, 失敗 ${mkSystemErrorCount}件`);
+      } else {
+        Logger.log('MKシステムの設定が未設定のため、スキップします');
+      }
+    }
+    
+    Logger.log('処理が完了しました');
+  } catch (error) {
+    Logger.log(`エラーが発生しました: ${error.toString()}`);
+    throw error;
+  }
+}
+
+/**
+ * カレンダーからイベントを取得（複数カレンダー対応）
+ * @param {Date} startDate - 開始日時
+ * @param {Date} endDate - 終了日時
+ * @return {Array} イベント配列
+ */
+function getCalendarEvents(startDate, endDate) {
+  const config = getConfig();
+  
+  // 設定からカレンダーIDを取得
+  const calendarIds = config.CALENDAR_ID;
+  
+  // カレンダーIDが配列でない場合は配列に変換
+  const calendarIdArray = Array.isArray(calendarIds) ? calendarIds : 
+                          (calendarIds ? [calendarIds] : []);
+  
+  // カレンダーIDが空の場合はデフォルトカレンダーを使用
+  if (calendarIdArray.length === 0) {
+    const defaultCalendar = CalendarApp.getDefaultCalendar();
+    Logger.log(`デフォルトカレンダーを使用: ${defaultCalendar.getName()}`);
+    return defaultCalendar.getEvents(startDate, endDate);
+  }
+  
+  Logger.log(`${calendarIdArray.length}件のカレンダーからイベントを取得します`);
+  
+  const allEvents = [];
+  const eventIds = new Set(); // 重複イベントを避けるためのIDセット
+  
+  // 各カレンダーからイベントを取得
+  for (let i = 0; i < calendarIdArray.length; i++) {
+    const calendarId = calendarIdArray[i];
+    
+    try {
+      const calendar = CalendarApp.getCalendarById(calendarId);
+      const calendarName = calendar.getName();
+      Logger.log(`  ${i + 1}. カレンダーID: ${calendarId}`);
+      Logger.log(`     カレンダー名: ${calendarName}`);
+      
+      const events = calendar.getEvents(startDate, endDate);
+      Logger.log(`     → ${events.length}件のイベントを取得`);
+      
+      // イベントを追加（重複チェック）
+      for (const event of events) {
+        // イベントIDを使って重複をチェック
+        const eventId = event.getId();
+        if (!eventIds.has(eventId)) {
+          eventIds.add(eventId);
+          allEvents.push(event);
+        }
+      }
+    } catch (error) {
+      Logger.log(`  ${i + 1}. カレンダーID: ${calendarId}`);
+      Logger.log(`     → エラー: ${error.toString()}`);
+      Logger.log(`     → このカレンダーはスキップします`);
+      // エラーが発生しても他のカレンダーは続行
+    }
+  }
+  
+  Logger.log(`合計 ${allEvents.length}件のイベントを取得しました（重複除外済み）`);
+  return allEvents;
+}
+
+/**
+ * ★印がついていて、マーケティング部のメンバーが参加しているイベントをフィルタリング
+ * @param {Array} events - イベント配列
+ * @param {Array} marketingTeam - マーケティング部のメールアドレス配列
+ * @return {Array} フィルタリングされたイベント配列
+ */
+function filterMarketingEvents(events, marketingTeam) {
+  // まずすべてのイベントのタイトルをログに出力（デバッグ用）
+  Logger.log(`取得した全イベント一覧:`);
+  events.forEach((event, index) => {
+    const title = event.getTitle();
+    const description = event.getDescription() || '';
+    Logger.log(`  ${index + 1}. タイトル: "${title}"`);
+    Logger.log(`     説明: "${description.substring(0, 50)}${description.length > 50 ? '...' : ''}"`);
+    Logger.log(`     開始時刻: ${event.getStartTime()}`);
+  });
+  
+  // まず★印がついているイベントだけを抽出
+  const starEvents = events.filter(event => {
+    const title = event.getTitle();
+    const description = event.getDescription() || '';
+    
+    // ★印のチェック（タイトルまたは説明に★が含まれているか）
+    // 全角★（U+2605）と半角★の両方をチェック
+    const hasStar = title.includes('★') || 
+                   title.includes('☆') || // 念のため☆もチェック
+                   description.includes('★') || 
+                   description.includes('☆');
+    
+    if (hasStar) {
+      Logger.log(`★印のイベントを発見: "${title}" (${event.getStartTime()})`);
+    } else {
+      // ★が含まれていない場合もログに出力（デバッグ用）
+      Logger.log(`★印なし: "${title}"`);
+    }
+    
+    return hasStar;
+  });
+  
+  Logger.log(`★印がついているイベント: ${starEvents.length}件`);
+  
+  // ★印がついているイベントから、マーケティング部のメンバーが参加しているイベントをフィルタリング
+  return starEvents.filter(event => {
+    // マーケティング部のメンバーが参加しているかチェック
+    const attendees = event.getGuestList().map(guest => guest.getEmail());
+    const organizers = event.getCreators(); // 作成者
+    
+    const allParticipants = [...organizers, ...attendees];
+    
+    // マーケティング部のメンバーが1人以上参加しているか
+    const hasMarketingMember = allParticipants.some(participant => 
+      marketingTeam.some(teamMember => 
+        participant.toLowerCase() === teamMember.toLowerCase()
+      )
+    );
+    
+    if (hasMarketingMember) {
+      Logger.log(`マーケティング部メンバーが参加: ${event.getTitle()}`);
+    }
+    
+    return hasMarketingMember;
+  });
+}
+
+/**
+ * イベントから会議データを抽出
+ * @param {CalendarEvent} event - カレンダーイベント
+ * @return {Object} 会議データオブジェクト
+ */
+function extractMeetingData(event) {
+  const title = event.getTitle().replace('★', '').trim(); // ★を除去
+  
+  // クライアント名を抽出（タイトルから、または説明から）
+  // 例: 「★ABC株式会社との打ち合わせ」→「ABC株式会社」
+  const clientName = extractClientName(title, event.getDescription());
+  
+  // 担当者を決定（★マークを付けて登録しているメンバーの中で一番上に記載がある方）
+  const config = getConfig();
+  const responsiblePerson = getResponsiblePerson(event, config);
+  
+  // すべてのマーケティング部参加者を取得（表示用）
+  const marketingAttendees = getAllMarketingAttendees(event, config);
+  const marketingAttendeeNames = marketingAttendees.map(email => {
+    return config.EMAIL_TO_NAME[email] || email;
+  });
+  
+  // すべての参加者を取得（メールアドレスのみ）
+  const allAttendees = event.getGuestList().map(guest => guest.getEmail());
+  
+  return {
+    date: Utilities.formatDate(event.getStartTime(), Session.getScriptTimeZone(), 'yyyy-MM-dd'),
+    startTime: Utilities.formatDate(event.getStartTime(), Session.getScriptTimeZone(), 'HH:mm'),
+    endTime: Utilities.formatDate(event.getEndTime(), Session.getScriptTimeZone(), 'HH:mm'),
+    clientName: clientName,
+    responsiblePerson: responsiblePerson.name, // 担当者（最初のマーケティング部メンバー）
+    responsiblePersonEmail: responsiblePerson.email,
+    marketingAttendees: marketingAttendeeNames.join(', '), // マーケティング部参加者一覧
+    attendees: allAttendees.join(', '), // メールアドレスのみ
+    description: event.getDescription() || '',
+    location: event.getLocation() || ''
+  };
+}
+
+/**
+ * 担当者を決定（★マークを付けて登録しているメンバーの中で一番上に記載がある方）
+ * @param {CalendarEvent} event - カレンダーイベント
+ * @param {Object} config - 設定オブジェクト
+ * @return {Object} {name: 担当者名, email: メールアドレス}
+ */
+function getResponsiblePerson(event, config) {
+  // 1. まずイベントの作成者をチェック
+  const creators = event.getCreators();
+  for (const creator of creators) {
+    if (config.MARKETING_TEAM.some(member => 
+      creator.toLowerCase() === member.toLowerCase()
+    )) {
+      return {
+        name: config.EMAIL_TO_NAME[creator] || creator,
+        email: creator
+      };
+    }
+  }
+  
+  // 2. 次に参加者リストの最初のマーケティング部メンバーを探す
+  const guests = event.getGuestList();
+  for (const guest of guests) {
+    const email = guest.getEmail();
+    if (config.MARKETING_TEAM.some(member => 
+      email.toLowerCase() === member.toLowerCase()
+    )) {
+      return {
+        name: config.EMAIL_TO_NAME[email] || email,
+        email: email
+      };
+    }
+  }
+  
+  // 見つからない場合は最初のマーケティング部メンバーをデフォルトとして返す
+  Logger.log(`警告: マーケティング部メンバーが見つかりませんでした: ${event.getTitle()}`);
+  const firstMember = config.MARKETING_TEAM[0];
+  return {
+    name: config.EMAIL_TO_NAME[firstMember] || firstMember,
+    email: firstMember
+  };
+}
+
+/**
+ * すべてのマーケティング部参加者を取得
+ * @param {CalendarEvent} event - カレンダーイベント
+ * @param {Object} config - 設定オブジェクト
+ * @return {Array} マーケティング部メンバーのメールアドレス配列
+ */
+function getAllMarketingAttendees(event, config) {
+  const marketingAttendees = [];
+  
+  // 作成者をチェック
+  const creators = event.getCreators();
+  for (const creator of creators) {
+    if (config.MARKETING_TEAM.some(member => 
+      creator.toLowerCase() === member.toLowerCase()
+    )) {
+      if (!marketingAttendees.includes(creator)) {
+        marketingAttendees.push(creator);
+      }
+    }
+  }
+  
+  // 参加者をチェック
+  const guests = event.getGuestList();
+  for (const guest of guests) {
+    const email = guest.getEmail();
+    if (config.MARKETING_TEAM.some(member => 
+      email.toLowerCase() === member.toLowerCase()
+    )) {
+      if (!marketingAttendees.includes(email)) {
+        marketingAttendees.push(email);
+      }
+    }
+  }
+  
+  return marketingAttendees;
+}
+
+/**
+ * タイトルまたは説明からクライアント名を抽出
+ * @param {String} title - イベントタイトル
+ * @param {String} description - イベント説明
+ * @return {String} クライアント名
+ */
+function extractClientName(title, description) {
+  // パターン1: 「★ABC株式会社との打ち合わせ」→「ABC株式会社」
+  // パターン2: 説明に「クライアント: ABC株式会社」と記載されている
+  
+  // タイトルから抽出を試みる
+  const titlePatterns = [
+    /^★?(.+?)(との|とのミーティング|との打ち合わせ|と|ミーティング|打ち合わせ)/,
+    /^★?(.+?)$/
+  ];
+  
+  for (const pattern of titlePatterns) {
+    const match = title.match(pattern);
+    if (match && match[1]) {
+      return match[1].trim();
+    }
+  }
+  
+  // 説明から抽出を試みる
+  if (description) {
+    const descPatterns = [
+      /クライアント[：:]\s*(.+?)(\n|$)/,
+      /顧客[：:]\s*(.+?)(\n|$)/,
+      /Client[：:]\s*(.+?)(\n|$)/
+    ];
+    
+    for (const pattern of descPatterns) {
+      const match = description.match(pattern);
+      if (match && match[1]) {
+        return match[1].trim();
+      }
+    }
+  }
+  
+  // 見つからない場合はタイトルをそのまま返す
+  return title;
+}
+
+/**
+ * スプレッドシートを取得または作成
+ * @param {Object} config - 設定オブジェクト
+ * @return {Spreadsheet} スプレッドシートオブジェクト
+ */
+function getOrCreateSpreadsheet(config) {
+  if (config.SPREADSHEET_ID) {
+    try {
+      return SpreadsheetApp.openById(config.SPREADSHEET_ID);
+    } catch (error) {
+      Logger.log(`スプレッドシートが見つかりません。新規作成します: ${error.toString()}`);
+    }
+  }
+  
+  // 新しいスプレッドシートを作成
+  const spreadsheet = SpreadsheetApp.create(config.SPREADSHEET_NAME);
+  Logger.log(`新しいスプレッドシートを作成しました: ${spreadsheet.getId()}`);
+  Logger.log(`スプレッドシートURL: ${spreadsheet.getUrl()}`);
+  
+  // Config.gsのSPREADSHEET_IDを更新する場合のコメント
+  // Logger.log(`次回から使用するには、Config.gsのSPREADSHEET_IDに以下を設定してください: ${spreadsheet.getId()}`);
+  
+  return spreadsheet;
+}
+
+/**
+ * シートを取得または作成
+ * @param {Spreadsheet} spreadsheet - スプレッドシートオブジェクト
+ * @param {String} sheetName - シート名
+ * @return {Sheet} シートオブジェクト
+ */
+function getOrCreateSheet(spreadsheet, sheetName) {
+  let sheet = spreadsheet.getSheetByName(sheetName);
+  if (!sheet) {
+    sheet = spreadsheet.insertSheet(sheetName);
+    Logger.log(`新しいシートを作成しました: ${sheetName}`);
+  }
+  return sheet;
+}
+
+/**
+ * シートのヘッダー行を設定
+ * @param {Sheet} sheet - シートオブジェクト
+ */
+function setupSheetHeaders(sheet) {
+  const headerRange = sheet.getRange(1, 1, 1, 7);
+  const headers = headerRange.getValues()[0];
+  
+  // ヘッダーが既に設定されている場合はスキップ
+  if (headers[0] !== '') {
+    return;
+  }
+  
+  // ヘッダー行を設定
+  const headerValues = [
+    '日付',
+    '開始時刻',
+    '終了時刻',
+    'クライアント名',
+    '担当者',
+    'マーケティング部参加者',
+    '備考'
+  ];
+  
+  headerRange.setValues([headerValues]);
+  
+  // ヘッダー行の書式設定
+  headerRange.setFontWeight('bold');
+  headerRange.setBackground('#4285f4');
+  headerRange.setFontColor('#ffffff');
+  
+  // 列幅を指定
+  const columnWidths = [65, 100, 100, 250, 100, 250, 350]; // A列からG列
+  for (let i = 0; i < columnWidths.length; i++) {
+    sheet.setColumnWidth(i + 1, columnWidths[i]);
+  }
+  
+  Logger.log('ヘッダー行を設定しました');
+}
+
+/**
+ * スプレッドシートにデータを書き込み
+ * @param {Sheet} sheet - シートオブジェクト
+ * @param {Array} meetingDataList - 会議データの配列
+ */
+function writeToSpreadsheet(sheet, meetingDataList) {
+  if (meetingDataList.length === 0) {
+    return;
+  }
+  
+  // 既存のデータをチェックして重複を避ける
+  const lastRow = sheet.getLastRow();
+  let existingData = [];
+  if (lastRow > 1) {
+    // ヘッダー行を除いた既存データを取得（日付、開始時刻、終了時刻、クライアント名、担当者で重複チェック）
+    // 5列: 日付、開始時刻、終了時刻、クライアント名、担当者
+    const dataRange = sheet.getRange(2, 1, lastRow - 1, 5);
+    existingData = dataRange.getValues();
+  }
+  
+  // 新しいデータをフィルタリング（重複を除外）
+  const newDataList = meetingDataList.filter(meetingData => {
+    // 同じ日付、開始時刻、クライアント名、担当者の組み合わせが既に存在するかチェック
+    // より厳密にチェックするため、時刻の比較も改善
+    const isDuplicate = existingData.some(row => {
+      const existingDate = Utilities.formatDate(row[0], Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      const existingStartTime = row[1] ? row[1].toString().trim() : '';
+      const existingEndTime = row[2] ? row[2].toString().trim() : '';
+      const existingClientName = row[3] ? row[3].toString().trim() : '';
+      const existingResponsible = row[4] ? row[4].toString().trim() : ''; // 担当者は4列目
+      
+      // 日付、開始時刻、終了時刻、クライアント名、担当者がすべて一致する場合に重複とみなす
+      return existingDate === meetingData.date &&
+             existingStartTime === meetingData.startTime.trim() &&
+             existingEndTime === meetingData.endTime.trim() &&
+             existingClientName === meetingData.clientName.trim() &&
+             existingResponsible === meetingData.responsiblePerson.trim();
+    });
+    
+    if (isDuplicate) {
+      Logger.log(`重複データをスキップ: ${meetingData.date} ${meetingData.startTime} - ${meetingData.clientName} (${meetingData.responsiblePerson})`);
+    }
+    
+    return !isDuplicate;
+  });
+  
+  if (newDataList.length === 0) {
+    Logger.log('すべてのデータは既にスプレッドシートに存在します');
+    return;
+  }
+  
+  // 既存のデータがある場合の最後の行を取得
+  const startRow = lastRow + 1;
+  
+  // データを2次元配列に変換
+  const values = newDataList.map(meetingData => [
+    meetingData.date,
+    meetingData.startTime,
+    meetingData.endTime,
+    meetingData.clientName,
+    meetingData.responsiblePerson,
+    meetingData.marketingAttendees,
+    meetingData.description
+  ]);
+  
+  // データを書き込み
+  const range = sheet.getRange(startRow, 1, values.length, values[0].length);
+  range.setValues(values);
+  
+  // 日付列の書式設定
+  const dateColumn = 1;
+  const dateRange = sheet.getRange(startRow, dateColumn, values.length, 1);
+  dateRange.setNumberFormat('yyyy-mm-dd');
+  
+  Logger.log(`${values.length}行の新しいデータをスプレッドシートに書き込みました（${meetingDataList.length - values.length}件は重複のためスキップ）`);
+}
+
+/**
+ * MKシステムに議事録を登録
+ * @param {Object} meetingData - 会議データ
+ * @param {Object} mkSystemConfig - MKシステム設定
+ */
+function registerToMKSystem(meetingData, mkSystemConfig) {
+  try {
+    // テストモードの場合は登録をスキップ
+    const config = getConfig();
+    if (config.TEST_MODE) {
+      Logger.log(`[テストモード] 登録をスキップ: ${meetingData.clientName} - ${meetingData.date}`);
+      Logger.log(`登録データ: ${JSON.stringify(meetingData, null, 2)}`);
+      return { success: true, testMode: true };
+    }
+    
+    // MKシステムのAPIエンドポイントと認証方法を設定
+    const url = mkSystemConfig.API_ENDPOINT;
+    
+    // APIエンドポイントが未設定またはexample.comの場合はスキップ
+    if (!url || url.includes('example.com')) {
+      Logger.log(`MKシステムの設定が未設定のため、スキップ: ${meetingData.clientName}`);
+      return { success: false, skipped: true, reason: 'API endpoint not configured' };
+    }
+    
+    const apiKey = mkSystemConfig.API_KEY;
+    const authType = mkSystemConfig.AUTH_TYPE || 'bearer';
+    
+    // フィールドマッピングを適用
+    const fieldMapping = mkSystemConfig.FIELD_MAPPING || {};
+    const mapField = (originalField) => {
+      return fieldMapping[originalField] || originalField;
+    };
+    
+    // リクエストペイロードを作成
+    const payload = {
+      [mapField('date')]: meetingData.date,
+      [mapField('start_time')]: meetingData.startTime,
+      [mapField('end_time')]: meetingData.endTime,
+      [mapField('client_name')]: meetingData.clientName,
+      [mapField('responsible_person')]: meetingData.responsiblePerson, // 担当者（最初のマーケティング部メンバー）
+      [mapField('attendees')]: meetingData.attendees,
+      [mapField('description')]: meetingData.description,
+      [mapField('location')]: meetingData.location
+    };
+    
+    // オプションパラメータの追加
+    if (mkSystemConfig.ADDITIONAL_FIELDS) {
+      Object.assign(payload, mkSystemConfig.ADDITIONAL_FIELDS);
+    }
+    
+    // ヘッダーを作成
+    const headers = {
+      'Content-Type': 'application/json',
+      ...mkSystemConfig.ADDITIONAL_HEADERS || {}
+    };
+    
+    // 認証ヘッダーを追加
+    if (authType === 'bearer') {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    } else if (authType === 'apikey') {
+      headers['X-API-Key'] = apiKey;
+    }
+    
+    // HTTPリクエストを送信
+    const options = {
+      method: 'POST',
+      headers: headers,
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+    
+    Logger.log(`MKシステムに登録中: ${meetingData.clientName} - ${meetingData.date}`);
+    const response = UrlFetchApp.fetch(url, options);
+    const responseCode = response.getResponseCode();
+    const responseText = response.getContentText();
+    
+    if (responseCode >= 200 && responseCode < 300) {
+      Logger.log(`登録成功: ${meetingData.clientName} - ${meetingData.date}`);
+      Logger.log(`レスポンス: ${responseText}`);
+    } else {
+      Logger.log(`登録失敗 (${responseCode}): ${meetingData.clientName} - ${meetingData.date}`);
+      Logger.log(`エラー内容: ${responseText}`);
+    }
+    
+    return {
+      success: responseCode >= 200 && responseCode < 300,
+      statusCode: responseCode,
+      response: responseText
+    };
+  } catch (error) {
+    Logger.log(`MKシステム登録エラー: ${error.toString()}`);
+    throw error;
+  }
+}
+
+// 注意: getConfig() 関数は Config.gs で定義されています
+// セキュアな設定を使用する場合は、Config.gsのgetSecureConfig()を使用してください
+
+/**
+ * 毎日朝6:00に自動実行するトリガーを設定
+ * この関数を1回実行すると、毎日朝6:00にmain()関数が自動実行されます
+ */
+function setupDailyTrigger() {
+  // 既存のトリガーを削除
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'main') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  // 新しいトリガーを作成（毎日朝6:00）
+  ScriptApp.newTrigger('main')
+    .timeBased()
+    .everyDays(1)
+    .atHour(6)
+    .create();
+  
+  Logger.log('毎日朝6:00に自動実行するトリガーを設定しました');
+  SpreadsheetApp.getActiveSpreadsheet().toast('トリガーを設定しました。毎日朝6:00に自動実行されます。', '議事録自動登録', 5);
+}
+
+/**
+ * トリガーを削除
+ */
+function deleteTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'main') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  Logger.log('トリガーを削除しました');
+  SpreadsheetApp.getActiveSpreadsheet().toast('トリガーを削除しました', '議事録自動登録', 3);
+}
+
+/**
+ * スプレッドシートを開いたときにメニューを追加
+ * この関数は、スプレッドシートを開いたときに自動的に実行されます
+ */
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('議事録自動登録')
+    .addItem('議事録を登録', 'runMain')
+    .addSeparator()
+    .addItem('自動実行を設定（毎日6:00）', 'setupDailyTrigger')
+    .addItem('自動実行を解除', 'deleteTrigger')
+    .addToUi();
+}
+
+/**
+ * メニューから実行されるメイン処理
+ */
+function runMain() {
+  try {
+    SpreadsheetApp.getActiveSpreadsheet().toast('処理を開始します...', '議事録自動登録', 2);
+    main();
+    SpreadsheetApp.getActiveSpreadsheet().toast('処理が完了しました', '議事録自動登録', 5);
+  } catch (error) {
+    SpreadsheetApp.getActiveSpreadsheet().toast('エラーが発生しました: ' + error.toString(), '議事録自動登録', 10);
+    Logger.log(`エラー: ${error.toString()}`);
+    throw error;
+  }
+}
+
+/**
+ * メニューから実行されるテスト処理
+ */
+function runTest() {
+  try {
+    SpreadsheetApp.getActiveSpreadsheet().toast('テストを開始します...', '議事録自動登録', 2);
+    testSingleEvent();
+    SpreadsheetApp.getActiveSpreadsheet().toast('テストが完了しました。ログを確認してください。', '議事録自動登録', 5);
+  } catch (error) {
+    SpreadsheetApp.getActiveSpreadsheet().toast('エラーが発生しました: ' + error.toString(), '議事録自動登録', 10);
+    Logger.log(`エラー: ${error.toString()}`);
+  }
+}
+
+/**
+ * 特定の日付（2025/11/12）のイベントをテスト
+ */
+function testSpecificDate() {
+  const config = getConfig();
+  
+  try {
+    // 2025年11月12日を指定
+    const targetDate = new Date(2025, 10, 12); // 月は0から始まるので11月は10
+    targetDate.setHours(0, 0, 0, 0); // 00:00:00
+    
+    const startDate = new Date(targetDate);
+    const endDate = new Date(targetDate);
+    endDate.setHours(23, 59, 59, 999); // 23:59:59
+    
+    Logger.log(`テスト対象日: ${startDate.toLocaleString('ja-JP')} ～ ${endDate.toLocaleString('ja-JP')}`);
+    
+    // カレンダーイベントを取得
+    const events = getCalendarEvents(startDate, endDate);
+    Logger.log(`取得したイベント数: ${events.length}件`);
+    
+    // すべてのイベントの詳細をログに出力
+    Logger.log(`取得した全イベント一覧:`);
+    events.forEach((event, index) => {
+      const title = event.getTitle();
+      const description = event.getDescription() || '';
+      Logger.log(`  ${index + 1}. タイトル: "${title}"`);
+      Logger.log(`     説明: "${description.substring(0, 50)}${description.length > 50 ? '...' : ''}"`);
+      Logger.log(`     開始時刻: ${event.getStartTime()}`);
+      Logger.log(`     作成者: ${event.getCreators().join(', ')}`);
+      const attendees = event.getGuestList().map(guest => guest.getEmail());
+      Logger.log(`     参加者: ${attendees.join(', ')}`);
+    });
+    
+    // ★印がついていて、マーケティング部のメンバーが参加しているイベントをフィルタリング
+    const targetEvents = filterMarketingEvents(events, config.MARKETING_TEAM);
+    Logger.log(`対象イベント数: ${targetEvents.length}件`);
+    
+    if (targetEvents.length > 0) {
+      // スプレッドシートを取得または作成
+      const spreadsheet = getOrCreateSpreadsheet(config);
+      const sheet = getOrCreateSheet(spreadsheet, config.SHEET_NAME);
+      setupSheetHeaders(sheet);
+      
+      // すべての会議データを抽出
+      const allMeetingData = [];
+      for (const event of targetEvents) {
+        const meetingData = extractMeetingData(event);
+        allMeetingData.push(meetingData);
+        Logger.log(`抽出したイベント: ${meetingData.clientName} - ${meetingData.date} ${meetingData.startTime} - 担当者: ${meetingData.responsiblePerson}`);
+      }
+      
+      // スプレッドシートに書き込み
+      if (allMeetingData.length > 0) {
+        writeToSpreadsheet(sheet, allMeetingData);
+        Logger.log(`${allMeetingData.length}件のデータをスプレッドシートに記録しました`);
+        Logger.log(`スプレッドシートURL: ${spreadsheet.getUrl()}`);
+        SpreadsheetApp.getActiveSpreadsheet().toast(`${allMeetingData.length}件のデータをスプレッドシートに記録しました`, '議事録自動登録', 5);
+      }
+    } else {
+      Logger.log('★印がついていて、マーケティング部メンバーが参加しているイベントが見つかりませんでした');
+      Logger.log('ヒント: イベントのタイトルまたは説明に★が含まれているか確認してください');
+      Logger.log('ヒント: イベントの作成者または参加者にマーケティング部メンバーが含まれているか確認してください');
+      SpreadsheetApp.getActiveSpreadsheet().toast('対象イベントが見つかりませんでした。ログを確認してください。', '議事録自動登録', 5);
+    }
+  } catch (error) {
+    Logger.log(`エラー: ${error.toString()}`);
+    SpreadsheetApp.getActiveSpreadsheet().toast('エラーが発生しました: ' + error.toString(), '議事録自動登録', 10);
+    throw error;
+  }
+}
+
+/**
+ * 期間を指定してテスト（2025/11/1～11/14）
+ */
+function testDateRange() {
+  const config = getConfig();
+  
+  try {
+    // 2025年11月1日から11月14日まで
+    const startDate = new Date(2025, 10, 1); // 月は0から始まるので11月は10
+    startDate.setHours(0, 0, 0, 0); // 00:00:00
+    
+    const endDate = new Date(2025, 10, 14); // 11月14日
+    endDate.setHours(23, 59, 59, 999); // 23:59:59
+    
+    Logger.log(`テスト期間: ${startDate.toLocaleString('ja-JP')} ～ ${endDate.toLocaleString('ja-JP')}`);
+    
+    // カレンダーイベントを取得
+    const events = getCalendarEvents(startDate, endDate);
+    Logger.log(`取得したイベント数: ${events.length}件`);
+    
+    // ★印がついていて、マーケティング部のメンバーが参加しているイベントをフィルタリング
+    const targetEvents = filterMarketingEvents(events, config.MARKETING_TEAM);
+    Logger.log(`対象イベント数: ${targetEvents.length}件`);
+    
+    if (targetEvents.length > 0) {
+      // スプレッドシートを取得または作成
+      const spreadsheet = getOrCreateSpreadsheet(config);
+      const sheet = getOrCreateSheet(spreadsheet, config.SHEET_NAME);
+      setupSheetHeaders(sheet);
+      
+      // すべての会議データを抽出
+      const allMeetingData = [];
+      for (const event of targetEvents) {
+        const meetingData = extractMeetingData(event);
+        allMeetingData.push(meetingData);
+        Logger.log(`抽出したイベント: ${meetingData.clientName} - ${meetingData.date} ${meetingData.startTime} - 担当者: ${meetingData.responsiblePerson}`);
+      }
+      
+      // スプレッドシートに書き込み
+      if (allMeetingData.length > 0) {
+        writeToSpreadsheet(sheet, allMeetingData);
+        Logger.log(`${allMeetingData.length}件のデータをスプレッドシートに記録しました`);
+        Logger.log(`スプレッドシートURL: ${spreadsheet.getUrl()}`);
+        SpreadsheetApp.getActiveSpreadsheet().toast(`${allMeetingData.length}件のデータをスプレッドシートに記録しました`, '議事録自動登録', 5);
+      }
+    } else {
+      Logger.log('★印がついていて、マーケティング部メンバーが参加しているイベントが見つかりませんでした');
+      SpreadsheetApp.getActiveSpreadsheet().toast('対象イベントが見つかりませんでした', '議事録自動登録', 3);
+    }
+  } catch (error) {
+    Logger.log(`エラー: ${error.toString()}`);
+    SpreadsheetApp.getActiveSpreadsheet().toast('エラーが発生しました: ' + error.toString(), '議事録自動登録', 10);
+    throw error;
+  }
+}
+
+/**
+ * テスト用：★印がついたイベントの登録をテスト
+ * 前日から今日までのイベントをチェックします
+ */
+function testSingleEvent() {
+  const config = getConfig();
+  
+  try {
+    // テスト期間：前日から今日まで
+    const today = new Date();
+    today.setHours(23, 59, 59, 999); // 今日の23:59:59
+    
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    yesterday.setHours(0, 0, 0, 0); // 前日の00:00:00
+    
+    Logger.log(`テスト期間: ${yesterday.toLocaleString('ja-JP')} ～ ${today.toLocaleString('ja-JP')}`);
+    
+    // カレンダーイベントを取得
+    const events = getCalendarEvents(yesterday, today);
+    Logger.log(`取得したイベント数: ${events.length}件`);
+    
+    // ★印がついていて、マーケティング部のメンバーが参加しているイベントをフィルタリング
+    const targetEvents = filterMarketingEvents(events, config.MARKETING_TEAM);
+    Logger.log(`対象イベント数: ${targetEvents.length}件`);
+    
+    if (targetEvents.length > 0) {
+      // スプレッドシートを取得または作成
+      const spreadsheet = getOrCreateSpreadsheet(config);
+      const sheet = getOrCreateSheet(spreadsheet, config.SHEET_NAME);
+      setupSheetHeaders(sheet);
+      
+      // すべての会議データを抽出
+      const allMeetingData = [];
+      for (const event of targetEvents) {
+        const meetingData = extractMeetingData(event);
+        allMeetingData.push(meetingData);
+        Logger.log(`抽出したイベント: ${meetingData.clientName} - ${meetingData.date} ${meetingData.startTime}`);
+      }
+      
+      // スプレッドシートに書き込み
+      if (allMeetingData.length > 0) {
+        writeToSpreadsheet(sheet, allMeetingData);
+        Logger.log(`${allMeetingData.length}件のデータをスプレッドシートに記録しました`);
+        Logger.log(`スプレッドシートURL: ${spreadsheet.getUrl()}`);
+        SpreadsheetApp.getActiveSpreadsheet().toast(`${allMeetingData.length}件のデータをスプレッドシートに記録しました`, '議事録自動登録', 5);
+      }
+    } else {
+      Logger.log('★印がついていて、マーケティング部メンバーが参加しているイベントが見つかりませんでした');
+      SpreadsheetApp.getActiveSpreadsheet().toast('対象イベントが見つかりませんでした', '議事録自動登録', 3);
+    }
+  } catch (error) {
+    Logger.log(`エラー: ${error.toString()}`);
+    throw error;
+  }
+}
+
