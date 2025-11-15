@@ -470,6 +470,14 @@ function writeToSpreadsheet(sheet, meetingDataList) {
     return;
   }
   
+  // 日付順（古い順）にソート
+  const sortedDataList = [...meetingDataList].sort((a, b) => {
+    // 日付で比較
+    const dateA = new Date(a.date + ' ' + a.startTime);
+    const dateB = new Date(b.date + ' ' + b.startTime);
+    return dateA - dateB; // 古い順（昇順）
+  });
+  
   // 既存のデータをチェックして重複を避ける
   const lastRow = sheet.getLastRow();
   let existingData = [];
@@ -481,7 +489,7 @@ function writeToSpreadsheet(sheet, meetingDataList) {
   }
   
   // 新しいデータをフィルタリング（重複を除外）
-  const newDataList = meetingDataList.filter(meetingData => {
+  const newDataList = sortedDataList.filter(meetingData => {
     // 同じ日付、開始時刻、クライアント名、担当者の組み合わせが既に存在するかチェック
     // より厳密にチェックするため、時刻の比較も改善
     const isDuplicate = existingData.some(row => {
@@ -680,7 +688,7 @@ function deleteTrigger() {
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('議事録自動登録')
-    .addItem('議事録を登録', 'runMain')
+    .addItem('議事録を登録（前日をチェック）', 'runMain')
     .addSeparator()
     .addItem('自動実行を設定（毎日6:00）', 'setupDailyTrigger')
     .addItem('自動実行を解除', 'deleteTrigger')
@@ -695,6 +703,90 @@ function runMain() {
     SpreadsheetApp.getActiveSpreadsheet().toast('処理を開始します...', '議事録自動登録', 2);
     main();
     SpreadsheetApp.getActiveSpreadsheet().toast('処理が完了しました', '議事録自動登録', 5);
+  } catch (error) {
+    SpreadsheetApp.getActiveSpreadsheet().toast('エラーが発生しました: ' + error.toString(), '議事録自動登録', 10);
+    Logger.log(`エラー: ${error.toString()}`);
+    throw error;
+  }
+}
+
+/**
+ * 期間を指定して議事録を登録（2025/11/1～11/14）
+ */
+function runDateRange() {
+  try {
+    SpreadsheetApp.getActiveSpreadsheet().toast('処理を開始します...', '議事録自動登録', 2);
+    
+    const config = getConfig();
+    
+    // 2025年11月1日から11月14日まで
+    const startDate = new Date(2025, 10, 1); // 月は0から始まるので11月は10
+    startDate.setHours(0, 0, 0, 0); // 00:00:00
+    
+    const endDate = new Date(2025, 10, 14); // 11月14日
+    endDate.setHours(23, 59, 59, 999); // 23:59:59
+    
+    Logger.log(`対象期間: ${startDate.toLocaleString('ja-JP')} ～ ${endDate.toLocaleString('ja-JP')}`);
+    
+    // カレンダーイベントを取得
+    const events = getCalendarEvents(startDate, endDate);
+    
+    // ★印がついていて、マーケティング部のメンバーが参加しているイベントをフィルタリング
+    const targetEvents = filterMarketingEvents(events, config.MARKETING_TEAM);
+    
+    Logger.log(`対象イベント数: ${targetEvents.length}`);
+    
+    // スプレッドシートを取得または作成
+    const spreadsheet = getOrCreateSpreadsheet(config);
+    const sheet = getOrCreateSheet(spreadsheet, config.SHEET_NAME);
+    
+    // ヘッダー行を設定（初回のみ）
+    setupSheetHeaders(sheet);
+    
+    // すべての会議データを抽出
+    const allMeetingData = [];
+    for (const event of targetEvents) {
+      const meetingData = extractMeetingData(event);
+      allMeetingData.push(meetingData);
+    }
+    
+    // スプレッドシートに書き込み
+    if (allMeetingData.length > 0) {
+      writeToSpreadsheet(sheet, allMeetingData);
+      Logger.log(`${allMeetingData.length}件のデータをスプレッドシートに記録しました`);
+      Logger.log(`スプレッドシートURL: ${spreadsheet.getUrl()}`);
+    }
+    
+    // MKシステムに登録（エラーが発生してもスプレッドシートへの記録は完了している）
+    let mkSystemSuccessCount = 0;
+    let mkSystemErrorCount = 0;
+    
+    if (allMeetingData.length > 0) {
+      // MKシステムの設定が有効かチェック
+      if (config.MK_SYSTEM.API_ENDPOINT && 
+          config.MK_SYSTEM.API_ENDPOINT !== 'https://mk-system.example.com/api/meetings') {
+        Logger.log('MKシステムへの登録を開始します');
+        for (const meetingData of allMeetingData) {
+          try {
+            const result = registerToMKSystem(meetingData, config.MK_SYSTEM);
+            if (result && result.success) {
+              mkSystemSuccessCount++;
+            } else {
+              mkSystemErrorCount++;
+            }
+          } catch (error) {
+            mkSystemErrorCount++;
+            Logger.log(`MKシステム登録エラー（処理は続行します）: ${meetingData.clientName} - ${error.toString()}`);
+          }
+        }
+        Logger.log(`MKシステム登録結果: 成功 ${mkSystemSuccessCount}件, 失敗 ${mkSystemErrorCount}件`);
+      } else {
+        Logger.log('MKシステムの設定が未設定のため、スキップします');
+      }
+    }
+    
+    Logger.log('処理が完了しました');
+    SpreadsheetApp.getActiveSpreadsheet().toast(`${allMeetingData.length}件のデータを記録しました`, '議事録自動登録', 5);
   } catch (error) {
     SpreadsheetApp.getActiveSpreadsheet().toast('エラーが発生しました: ' + error.toString(), '議事録自動登録', 10);
     Logger.log(`エラー: ${error.toString()}`);
