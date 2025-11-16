@@ -1,0 +1,928 @@
+/**
+ * Outbrain 週次／月次レポート専用 GAS
+ * - 月別進捗
+ * - 週別進捗
+ * - CPN別／CR別進捗テーブル
+ *
+ * 単独のスプレッドシートで利用してください。
+ */
+
+const OR_DEFAULT_CSV_FOLDER_ID = '1ZJ8u8Y_5g2jvRVKps9-Itrnws0utAtbA';
+const OR_CSV_FOLDER_ID = PropertiesService.getScriptProperties().getProperty('CSV_FOLDER_ID') || OR_DEFAULT_CSV_FOLDER_ID;
+
+const OUTBRAIN_CSV_COLUMN_TITLES = [
+  'Image',
+  'Content Title',
+  'ID',
+  'Amount Spent',
+  'Impressions',
+  'Avg. CPC',
+  'Clicks',
+  'CTR',
+  'Conversions (Click)',
+  'Conversion Rate (Click)',
+  'CPA (Click)'
+];
+
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('Outbrain進捗')
+    .addItem('週次レポートを生成', 'generateWeeklyReport')
+    .addToUi();
+}
+
+function generateWeeklyReport() {
+  Logger.log('=== generateWeeklyReport開始 ===');
+  try {
+    const folderIds = [];
+    if (OR_CSV_FOLDER_ID) folderIds.push(OR_CSV_FOLDER_ID);
+    if (!folderIds.includes(OR_DEFAULT_CSV_FOLDER_ID)) folderIds.push(OR_DEFAULT_CSV_FOLDER_ID);
+
+    const fileList = [];
+    const monthlyFiles = [];
+    const allNames = [];
+
+    folderIds.forEach(folderId => {
+      try {
+        const folder = DriveApp.getFolderById(folderId);
+        collectCsvFilesRecursive_(folder, folderId, monthlyFiles, fileList, allNames, '');
+      } catch (err) {
+        Logger.log(`フォルダ取得に失敗: ${folderId} => ${err}`);
+      }
+    });
+
+    if (fileList.length === 0 && monthlyFiles.length === 0) {
+      const nameList = allNames.length > 0 ? '- ' + allNames.join('\n- ') : '(なし)';
+      SpreadsheetApp.getUi().alert('対象となるCSVが見つかりません。\n検出したファイル:\n' + nameList);
+      return;
+    }
+
+    fileList.sort((a, b) => {
+      if (a.end.getTime() !== b.end.getTime()) {
+        return b.end.getTime() - a.end.getTime();
+      }
+      if (a.type !== b.type) {
+        return a.type === 'CPN' ? -1 : 1;
+      }
+      return 0;
+    });
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sheet = ss.getSheetByName('週次レポート');
+    if (!sheet) {
+      sheet = ss.insertSheet('週次レポート');
+    } else {
+      sheet.clear();
+    }
+
+    let rowCursor = 2;
+    const startCol = 2;
+
+    const weekGroups = new Map();
+    fileList.forEach(item => {
+      const weekKey = `${formatMd_(item.start)}~${formatMd_(item.end)}`;
+      if (!weekGroups.has(weekKey)) {
+        weekGroups.set(weekKey, { start: item.start, end: item.end, cpn: [], cr: [] });
+      }
+      const group = weekGroups.get(weekKey);
+      if (item.type === 'CPN') {
+        group.cpn.push(item);
+      } else {
+        group.cr.push(item);
+      }
+    });
+
+    const sortedWeeks = Array.from(weekGroups.entries()).sort((a, b) =>
+      a[1].end.getTime() - b[1].end.getTime()
+    );
+
+    rowCursor = renderMonthlySummary_(sheet, rowCursor, startCol, monthlyFiles) + 1;
+    rowCursor = renderWeeklySummary_(sheet, rowCursor, startCol, sortedWeeks) + 1;
+
+    for (const [weekKey, group] of sortedWeeks) {
+      if (group.cpn.length === 0) continue;
+      const weekLabel = `${formatMd_(group.start)}~${formatMd_(group.end)}`;
+      sheet.getRange(rowCursor, startCol, 1, 14).merge()
+        .setValue(`▼Outbrain CPN別進捗 (${weekLabel})`)
+        .setBackground('#a4c2f4')
+        .setFontColor('#000000')
+        .setFontWeight('bold');
+      rowCursor++;
+
+      const tableHeaderRow = rowCursor;
+      sheet.getRange(rowCursor, startCol, 1, 14).setValues([[
+        'キャンペーン', '配信金額', 'CPC', 'Imp', 'CPM', 'Click', 'CTR', 'CV', 'CVR', 'CAC', 'LP遷移数', 'LP遷移率', 'おやつ診断', 'おやつ診断率'
+      ]]).setBackground('#000000').setFontColor('#FFFFFF').setFontWeight('bold').setHorizontalAlignment('center');
+      rowCursor++;
+
+      const campaignMap = new Map();
+      for (const item of group.cpn) {
+        const rows = Utilities.parseCsv(item.file.getBlob().getDataAsString('UTF-8'));
+        if (!rows || rows.length < 2) continue;
+
+        const header = rows[0];
+        const headerNormalized = header.map(normalizeHeader_);
+        const idxCampaignName = header.findIndex(h => {
+          if (!h) return false;
+          const normalized = h.trim().toLowerCase().replace(/\s+/g, ' ');
+          return normalized === 'campaign name';
+        });
+        const indices = findColumnIndices(header, OUTBRAIN_CSV_COLUMN_TITLES);
+        const idxCost = indices[3];
+        const idxImp = indices[4];
+        const idxClick = indices[6];
+        const idxConv = indices[8];
+
+        let idxLpTransitions = findColumnIndexByKeywords_(headerNormalized, [
+          '01 lp gohobi conversions (click)',
+          'lp遷移数'
+        ]);
+        if (idxLpTransitions < 0) {
+          idxLpTransitions = header.findIndex(h => {
+            if (!h) return false;
+            const hLower = String(h).toLowerCase();
+            return hLower.includes('01 lp gohobi conversions');
+          });
+        }
+        const idxLpRate = findColumnIndexByKeywords_(headerNormalized, [
+          '01 lp gohobi conversion rate (click)',
+          'lp遷移率'
+        ]);
+        const idxOyatsuDiagnosis = findColumnIndexByKeywords_(headerNormalized, [
+          '021rissucounter?screen=splash conversions (click)',
+          'おやつ診断'
+        ]);
+        const idxOyatsuDiagnosisRate = findColumnIndexByKeywords_(headerNormalized, [
+          '021rissucounter?screen=splash conversion rate (click)',
+          'おやつ診断率'
+        ]);
+
+        let totalLpRate = '';
+        let totalOyatsuDiagnosisRate = '';
+        for (let r = 1; r < rows.length; r++) {
+          const row = rows[r];
+          if (!row || row.length === 0) continue;
+          const campaignNameRaw = idxCampaignName >= 0 ? String(row[idxCampaignName] || '') : '';
+          const campaignName = campaignNameRaw.trim().toLowerCase();
+          if (campaignName === 'total' || campaignName === '合計') {
+            totalLpRate = idxLpRate >= 0 ? String(row[idxLpRate] || '') : '';
+            totalOyatsuDiagnosisRate = idxOyatsuDiagnosisRate >= 0 ? String(row[idxOyatsuDiagnosisRate] || '') : '';
+            break;
+          }
+        }
+
+        for (let r = 1; r < rows.length; r++) {
+          const row = rows[r];
+          if (!row || row.length === 0) continue;
+          const campaignNameRaw = idxCampaignName >= 0 ? String(row[idxCampaignName] || '') : '';
+          const campaignName = campaignNameRaw.trim();
+          if (!campaignName || campaignName.toLowerCase() === 'total' || campaignName.toLowerCase() === '合計') continue;
+
+          const costRaw = cleanNumericValue(idxCost >= 0 ? row[idxCost] : null) || 0;
+          const cost = costRaw * 1.1 / 0.8;
+          const imp = cleanNumericValue(idxImp >= 0 ? row[idxImp] : null) || 0;
+          const click = cleanNumericValue(idxClick >= 0 ? row[idxClick] : null) || 0;
+          const conv = cleanNumericValue(idxConv >= 0 ? row[idxConv] : null) || 0;
+          const lpTransitionsValue = cleanNumericValue(idxLpTransitions >= 0 ? row[idxLpTransitions] : null);
+          const lpRateRaw = idxLpRate >= 0 ? String(row[idxLpRate] || '') : '';
+          const oyatsuDiagnosisValue = cleanNumericValue(idxOyatsuDiagnosis >= 0 ? row[idxOyatsuDiagnosis] : null);
+          const oyatsuDiagnosisRateRaw = idxOyatsuDiagnosisRate >= 0 ? String(row[idxOyatsuDiagnosisRate] || '') : '';
+
+          if (!campaignMap.has(campaignName)) {
+            campaignMap.set(campaignName, {
+              cost: 0,
+              imp: 0,
+              click: 0,
+              conv: 0,
+              lpTransitions: '',
+              lpRate: '',
+              oyatsuDiagnosis: '',
+              oyatsuDiagnosisRate: ''
+            });
+          }
+          const agg = campaignMap.get(campaignName);
+          agg.cost += cost;
+          agg.imp += imp;
+          agg.click += click;
+          agg.conv += conv;
+          if (lpTransitionsValue !== null && lpTransitionsValue !== undefined) {
+            agg.lpTransitions = String(Math.round(lpTransitionsValue));
+          }
+          if (lpRateRaw !== '') {
+            agg.lpRate = lpRateRaw;
+          }
+          if (oyatsuDiagnosisValue !== null && oyatsuDiagnosisValue !== undefined) {
+            agg.oyatsuDiagnosis = String(Math.round(oyatsuDiagnosisValue));
+          }
+          if (oyatsuDiagnosisRateRaw !== '') {
+            agg.oyatsuDiagnosisRate = oyatsuDiagnosisRateRaw;
+          }
+        }
+
+        if (campaignMap.size > 0) {
+          if (totalLpRate) {
+            campaignMap.forEach(agg => {
+              if (!agg.lpRate) agg.lpRate = totalLpRate;
+            });
+          }
+          if (totalOyatsuDiagnosisRate) {
+            campaignMap.forEach(agg => {
+              if (!agg.oyatsuDiagnosisRate) agg.oyatsuDiagnosisRate = totalOyatsuDiagnosisRate;
+            });
+          }
+        }
+      }
+
+      const campaigns = Array.from(campaignMap.entries())
+        .filter(([, data]) => data.cost > 0)
+        .sort((a, b) => b[1].cost - a[1].cost);
+
+      if (campaigns.length > 0) {
+        const values = campaigns.map(([name, data]) => ([
+          name,
+          Math.round(data.cost),
+          '',
+          Math.round(data.imp),
+          '',
+          Math.round(data.click),
+          '',
+          Math.round(data.conv),
+          '',
+          '',
+          data.lpTransitions || '',
+          formatPercentLabel_(data.lpRate || ''),
+          data.oyatsuDiagnosis || '',
+          formatPercentLabel_(data.oyatsuDiagnosisRate || '')
+        ]));
+        const dataStartRow = rowCursor;
+        sheet.getRange(rowCursor, startCol, values.length, 14).setValues(values);
+        applyMetricFormulas_(sheet, dataStartRow, values.length, {
+          costCol: startCol + 1,
+          clickCol: startCol + 5,
+          impCol: startCol + 3,
+          convCol: startCol + 7,
+          cpcCol: startCol + 2,
+          cpmCol: startCol + 4,
+          ctrCol: startCol + 6,
+          cvrCol: startCol + 8,
+          cacCol: startCol + 9,
+          cacZeroText: '"-"'
+        });
+        sheet.getRange(dataStartRow, startCol + 1, values.length, 1).setNumberFormat('"¥"#,##0');
+        sheet.getRange(dataStartRow, startCol + 2, values.length, 1).setNumberFormat('"¥"#,##0.0');
+        sheet.getRange(dataStartRow, startCol + 3, values.length, 1).setNumberFormat('#,##0');
+        sheet.getRange(dataStartRow, startCol + 4, values.length, 1).setNumberFormat('"¥"#,##0');
+        sheet.getRange(dataStartRow, startCol + 5, values.length, 1).setNumberFormat('#,##0');
+        sheet.getRange(dataStartRow, startCol + 6, values.length, 1).setNumberFormat('0.00%');
+        sheet.getRange(dataStartRow, startCol + 7, values.length, 1).setNumberFormat('#,##0');
+        sheet.getRange(dataStartRow, startCol + 8, values.length, 1).setNumberFormat('0.00%');
+        sheet.getRange(dataStartRow, startCol + 9, values.length, 1).setNumberFormat('"¥"#,##0');
+        rowCursor += values.length;
+      }
+
+      const tableRows = rowCursor - tableHeaderRow;
+      sheet.getRange(tableHeaderRow, startCol, tableRows, 14)
+        .setBorder(true, true, true, true, true, true);
+      if (tableRows > 1) {
+        sheet.getRange(tableHeaderRow + 1, startCol, tableRows - 1, 1).setHorizontalAlignment('left');
+        sheet.getRange(tableHeaderRow + 1, startCol + 1, tableRows - 1, 13).setHorizontalAlignment('right');
+      }
+      rowCursor += 2;
+    }
+
+    for (const [weekKey, group] of sortedWeeks) {
+      if (group.cr.length === 0) continue;
+      const weekLabel = `${formatMd_(group.start)}~${formatMd_(group.end)}`;
+      sheet.getRange(rowCursor, startCol, 1, 14).merge()
+        .setValue(`▼Outbrain CR別進捗 (${weekLabel})`)
+        .setBackground('#ea9999')
+        .setFontColor('#000000')
+        .setFontWeight('bold');
+      rowCursor++;
+
+      for (const item of group.cr) {
+        const rows = Utilities.parseCsv(item.file.getBlob().getDataAsString('UTF-8'));
+        if (!rows || rows.length < 2) continue;
+        const header = rows[0];
+        const idxCampaignName = header.findIndex(h => {
+          if (!h) return false;
+          const normalized = h.trim().toLowerCase().replace(/\s+/g, ' ');
+          return normalized === 'campaign name';
+        });
+        const indices = findColumnIndices(header, OUTBRAIN_CSV_COLUMN_TITLES);
+        const idxImage = indices[0];
+        const idxContentTitle = indices[1];
+        const idxCost = indices[3];
+        const idxImp = indices[4];
+        const idxClick = indices[6];
+        const idxConv = indices[8];
+        const headerNormalized = header.map(normalizeHeader_);
+        const idxLpTransitions = findColumnIndexByKeywords_(headerNormalized, [
+          '01 lp gohobi conversions (click)',
+          'lp遷移数'
+        ]);
+        const idxLpRateCr = findColumnIndexByKeywords_(headerNormalized, [
+          '01 lp gohobi conversion rate (click)',
+          'lp遷移率'
+        ]);
+        const idxOyatsuDiagnosis = findColumnIndexByKeywords_(headerNormalized, [
+          '021rissucounter?screen=splash conversions (click)',
+          'おやつ診断'
+        ]);
+        const idxOyatsuDiagnosisRate = findColumnIndexByKeywords_(headerNormalized, [
+          '021rissucounter?screen=splash conversion rate (click)',
+          'おやつ診断率'
+        ]);
+
+        const campaignGroups = new Map();
+        for (let r = 1; r < rows.length; r++) {
+          const row = rows[r];
+          if (!row || row.length === 0) continue;
+          const contentTitle = idxContentTitle >= 0 ? String(row[idxContentTitle] || '') : '';
+          const costRaw = cleanNumericValue(idxCost >= 0 ? row[idxCost] : null) || 0;
+          if (!contentTitle || costRaw <= 0) continue;
+          const campaignName = idxCampaignName >= 0 ? String(row[idxCampaignName] || '') : '';
+          const cost = Math.round(costRaw * 1.1 / 0.8);
+          const imp = Math.round(cleanNumericValue(idxImp >= 0 ? row[idxImp] : null) || 0);
+          const click = Math.round(cleanNumericValue(idxClick >= 0 ? row[idxClick] : null) || 0);
+          const conv = Math.round(cleanNumericValue(idxConv >= 0 ? row[idxConv] : null) || 0);
+          const image = idxImage >= 0 ? String(row[idxImage] || '') : '';
+          const lpTransitions = cleanNumericValue(idxLpTransitions >= 0 ? row[idxLpTransitions] : null) || 0;
+          const lpRateDisplay = formatPercentLabel_(idxLpRateCr >= 0 ? String(row[idxLpRateCr] || '') : '');
+          const oyatsuDiagnosis = cleanNumericValue(idxOyatsuDiagnosis >= 0 ? row[idxOyatsuDiagnosis] : null) || 0;
+          const oyatsuDiagnosisRateDisplay = formatPercentLabel_(idxOyatsuDiagnosisRate >= 0 ? String(row[idxOyatsuDiagnosisRate] || '') : '');
+
+          if (!campaignGroups.has(campaignName)) {
+            campaignGroups.set(campaignName, []);
+          }
+          campaignGroups.get(campaignName).push({
+            image,
+            contentTitle,
+            cost,
+            imp,
+            click,
+            conv,
+            lpTransitions,
+            lpRateDisplay,
+            oyatsuDiagnosis,
+            oyatsuDiagnosisRateDisplay
+          });
+        }
+
+        for (const [campaignName, entries] of campaignGroups) {
+          if (campaignName) {
+            sheet.getRange(rowCursor, startCol).setValue(campaignName).setFontWeight('bold');
+            rowCursor++;
+          }
+          const tableHeaderRow = rowCursor;
+          sheet.getRange(rowCursor, 1, 1, 13).setValues([[
+            '', '画像表示', 'テキスト', '軸', '配信金額', 'CPC', 'Imp', 'Click', 'CTR', 'CV', 'CVR', 'CAC', 'LP遷移数'
+          ]]).setBackground('#000000').setFontColor('#FFFFFF').setFontWeight('bold').setHorizontalAlignment('center');
+          sheet.getRange(rowCursor, 14, 1, 3).setValues([['LP遷移率', 'おやつ診断', 'おやつ診断率']])
+            .setBackground('#000000').setFontColor('#FFFFFF').setFontWeight('bold').setHorizontalAlignment('center');
+          rowCursor++;
+
+          const values = entries.map(entry => ([
+            entry.image,
+            '',
+            entry.contentTitle,
+            '',
+            entry.cost,
+            '',
+            entry.imp,
+            entry.click,
+            '',
+            entry.conv,
+            '',
+            '',
+            entry.lpTransitions,
+            entry.lpRateDisplay,
+            entry.oyatsuDiagnosis,
+            entry.oyatsuDiagnosisRateDisplay
+          ]));
+
+          const dataStartRow = rowCursor;
+          sheet.getRange(rowCursor, 1, values.length, 16).setValues(values);
+          const imgFormulas = values.map((_, i) => [`=IF(A${rowCursor + i}<>"", IMAGE(A${rowCursor + i}, 1), "")`]);
+          sheet.getRange(rowCursor, 2, values.length, 1).setFormulas(imgFormulas);
+          applyMetricFormulas_(sheet, dataStartRow, values.length, {
+            costCol: 5,
+            clickCol: 8,
+            impCol: 7,
+            convCol: 10,
+            cpcCol: 6,
+            ctrCol: 9,
+            cvrCol: 11,
+            cacCol: 12,
+            cacZeroText: '"-"'
+          });
+          sheet.getRange(dataStartRow, 5, values.length, 1).setNumberFormat('"¥"#,##0');
+          sheet.getRange(dataStartRow, 6, values.length, 1).setNumberFormat('"¥"#,##0.0');
+          sheet.getRange(dataStartRow, 7, values.length, 1).setNumberFormat('#,##0');
+          sheet.getRange(dataStartRow, 8, values.length, 1).setNumberFormat('#,##0');
+          sheet.getRange(dataStartRow, 9, values.length, 1).setNumberFormat('0.00%');
+          sheet.getRange(dataStartRow, 10, values.length, 1).setNumberFormat('#,##0');
+          sheet.getRange(dataStartRow, 11, values.length, 1).setNumberFormat('0.00%');
+          sheet.getRange(dataStartRow, 12, values.length, 1).setNumberFormat('"¥"#,##0');
+          sheet.getRange(dataStartRow, 13, values.length, 1).setNumberFormat('#,##0');
+          sheet.getRange(dataStartRow, 15, values.length, 1).setNumberFormat('#,##0');
+          rowCursor += values.length;
+
+          const tableRows = rowCursor - tableHeaderRow;
+          sheet.getRange(tableHeaderRow, 1, tableRows, 16)
+            .setBorder(true, true, true, true, true, true);
+          rowCursor++;
+        }
+      }
+      rowCursor++;
+    }
+
+    sheet.getRange(1, 1, rowCursor, 1)
+      .setBackground(null)
+      .setFontColor('#FFFFFF');
+    sheet.getRange(40, 1, 38, 1).setBorder(false, false, false, false, false, false);
+
+    const lastCol = 17;
+    for (let c = 1; c <= lastCol; c++) sheet.autoResizeColumn(c);
+    sheet.setColumnWidth(1, 70);
+    sheet.setColumnWidth(2, 120);
+    for (let c = 4; c <= 17; c++) {
+      sheet.setColumnWidth(c, 80);
+    }
+  } catch (error) {
+    Logger.log('週次レポート生成でエラー: ' + error.toString());
+    Logger.log('エラースタック: ' + error.stack);
+    SpreadsheetApp.getUi().alert('週次レポート生成でエラーが発生しました: ' + error.toString());
+  }
+  Logger.log('=== generateWeeklyReport終了 ===');
+}
+
+function parseWeekFromFilename_(name) {
+  if (!name) return null;
+  const s = String(name);
+  const sep = '(?:~|〜|～|\\-|ー|to|_)';
+  const dsep = '[\\./_\\-／－]?';
+  const reYmd = new RegExp('(20\\d{2})' + dsep + '(\\d{2})' + dsep + '(\\d{2})\\s*' + sep + '\\s*(20\\d{2})' + dsep + '(\\d{2})' + dsep + '(\\d{2})');
+  let m = s.match(reYmd);
+  if (m) {
+    return {
+      start: new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00+09:00`),
+      end: new Date(`${m[4]}-${m[5]}-${m[6]}T00:00:00+09:00`)
+    };
+  }
+  const reMd = new RegExp('(\\d{1,2})' + dsep + '(\\d{1,2})\\s*' + sep + '\\s*(\\d{1,2})' + dsep + '(\\d{1,2})');
+  m = s.match(reMd);
+  if (m) {
+    const year = new Date().getFullYear();
+    return {
+      start: new Date(`${year}-${pad2_(m[1])}-${pad2_(m[2])}T00:00:00+09:00`),
+      end: new Date(`${year}-${pad2_(m[3])}-${pad2_(m[4])}T00:00:00+09:00`)
+    };
+  }
+  return null;
+}
+
+function pad2_(n) {
+  return ('0' + Number(n)).slice(-2);
+}
+
+function formatMd_(d) {
+  return Utilities.formatDate(d, 'JST', 'MM/dd');
+}
+
+function collectCsvFilesRecursive_(folder, rootFolderId, monthlyFiles, fileList, allNames, currentPath) {
+  const files = folder.getFilesByType(MimeType.CSV);
+  while (files.hasNext()) {
+    const f = files.next();
+    const name = f.getName();
+    const displayPath = currentPath ? `${currentPath}/${name}` : name;
+    allNames.push(`${displayPath} (folder:${rootFolderId})`);
+    // 「10月.csv」「１０月.csv」「10月レポート.csv」など、半角/全角数字どちらも月別ファイルとして認識する
+    const monthMatch = name.match(/([0-9０-９]{1,2})月.*\.csv$/i) || name.match(/^([0-9０-９]{1,2})月\.csv$/i);
+    if (monthMatch) {
+      monthlyFiles.push({ file: f, name });
+      continue;
+    }
+    const isCPN = /CPN別進捗/i.test(name);
+    const isCR = /CR別進捗/i.test(name);
+    if (!isCPN && !isCR) continue;
+    const parsed = parseWeekFromFilename_(name);
+    if (parsed) {
+      fileList.push({ file: f, name, type: isCPN ? 'CPN' : 'CR', start: parsed.start, end: parsed.end });
+    }
+  }
+  const subFolders = folder.getFolders();
+  while (subFolders.hasNext()) {
+    const sub = subFolders.next();
+    const nextPath = currentPath ? `${currentPath}/${sub.getName()}` : sub.getName();
+    collectCsvFilesRecursive_(sub, rootFolderId, monthlyFiles, fileList, allNames, nextPath);
+  }
+}
+
+function renderMonthlySummary_(sheet, startRow, startCol, monthlyFiles) {
+  let row = startRow;
+  const width = 14;
+  sheet.getRange(row, startCol, 1, width).merge()
+    .setValue('＜月別進捗＞')
+    .setFontWeight('bold')
+    .setHorizontalAlignment('left');
+  row++;
+  const headerLabels = ['月', '配信金額', 'CPC', 'Imp', 'Click', 'CTR', '管理CV', '管理CVR', '管理CAC', '貴社CV', '貴社CVR', '貴社CAC', '転換率', ''];
+  const headerRow = row;
+  sheet.getRange(row, startCol, 1, headerLabels.length).setValues([headerLabels])
+    .setBackground('#000000')
+    .setFontColor('#FFFFFF')
+    .setFontWeight('bold');
+  row++;
+
+  let monthlyData = [];
+  if (monthlyFiles && monthlyFiles.length > 0) {
+    monthlyData = getMonthlySummaryData_(monthlyFiles);
+  }
+  if (monthlyData.length === 0) {
+    const currentDate = new Date();
+    const currentMonth = currentDate.getMonth() + 1;
+    const currentYear = currentDate.getFullYear();
+    const months = [];
+    if (currentMonth > 1) months.push(`${currentYear}年${currentMonth - 1}月`);
+    months.push(`${currentYear}年${currentMonth}月`);
+    monthlyData = months.map(month => ({
+      month: month.replace(/年(\d+)月/, '$1月'),
+      cost: 0,
+      imp: 0,
+      click: 0,
+      managerCv: 0,
+      clientCv: '',
+      clientCvr: '',
+      clientCac: '',
+      conversionRate: ''
+    }));
+  }
+
+  const dataRows = monthlyData.map(item => ([
+    item.month,
+    item.cost || 0,
+    '',
+    item.imp || 0,
+    item.click || 0,
+    '',
+    item.managerCv || 0,
+    '',
+    '',
+    item.clientCv || '',
+    item.clientCvr || '',
+    item.clientCac || '',
+    item.conversionRate || '',
+    ''
+  ]));
+
+  if (dataRows.length > 0) {
+    sheet.getRange(row, startCol, dataRows.length, headerLabels.length).setValues(dataRows);
+    const dataStartRow = row;
+    const dataRowCount = dataRows.length;
+    if (monthlyFiles && monthlyFiles.length > 0) {
+      applyMetricFormulas_(sheet, dataStartRow, dataRowCount, {
+        costCol: startCol + 1,
+        clickCol: startCol + 4,
+        impCol: startCol + 3,
+        convCol: startCol + 6,
+        cpcCol: startCol + 2,
+        ctrCol: startCol + 5,
+        cvrCol: startCol + 7,
+        cacCol: startCol + 8
+      });
+    }
+    sheet.getRange(dataStartRow, startCol + 1, dataRowCount, 1).setNumberFormat('"¥"#,##0');
+    sheet.getRange(dataStartRow, startCol + 2, dataRowCount, 1).setNumberFormat('"¥"#,##0.0');
+    sheet.getRange(dataStartRow, startCol + 3, dataRowCount, 2).setNumberFormat('#,##0');
+    sheet.getRange(dataStartRow, startCol + 5, dataRowCount, 1).setNumberFormat('0.00%');
+    sheet.getRange(dataStartRow, startCol + 6, dataRowCount, 1).setNumberFormat('#,##0');
+    sheet.getRange(dataStartRow, startCol + 7, dataRowCount, 1).setNumberFormat('0.00%');
+    sheet.getRange(dataStartRow, startCol + 8, dataRowCount, 1).setNumberFormat('"¥"#,##0');
+    row += dataRowCount;
+  }
+
+  const tableRows = row - headerRow;
+  sheet.getRange(headerRow, startCol, tableRows, headerLabels.length)
+    .setBorder(true, true, true, true, true, true);
+  sheet.getRange(headerRow, startCol - 1, tableRows, 1)
+    .setBorder(false, false, false, true, false, false)
+    .clearContent();
+  sheet.getRange(headerRow, startCol, 1, headerLabels.length).setHorizontalAlignment('center');
+  if (tableRows > 1) {
+    sheet.getRange(headerRow + 1, startCol, tableRows - 1, 1).setHorizontalAlignment('center');
+    if (headerLabels.length > 1) {
+      sheet.getRange(headerRow + 1, startCol + 1, tableRows - 1, headerLabels.length - 1)
+        .setHorizontalAlignment('right');
+    }
+  }
+  return row;
+}
+
+function renderWeeklySummary_(sheet, startRow, startCol, sortedWeeks) {
+  const weeklyData = getWeeklySummaryData_(sortedWeeks);
+  if (weeklyData.length === 0) {
+    return startRow - 1;
+  }
+  let row = startRow;
+  const headerLabels = ['週', '配信金額', 'CPC', 'Imp', 'Click', 'CTR', '管理CV', '管理CVR', '管理CAC', '貴社CV', '貴社CVR', '貴社CAC', '転換率'];
+  const tableWidth = headerLabels.length;
+  sheet.getRange(row, startCol, 1, tableWidth).merge().setValue('＜週別進捗＞').setFontWeight('bold').setHorizontalAlignment('left');
+  row++;
+  const headerRow = row;
+  sheet.getRange(row, startCol, 1, tableWidth).setValues([headerLabels])
+    .setBackground('#000000').setFontColor('#FFFFFF').setFontWeight('bold');
+  row++;
+  const dataRows = weeklyData.map(item => {
+    const weekParts = item.week.split(/[~〜～]/);
+    const startDate = weekParts[0] || '';
+    const endDate = weekParts[1] || '';
+    const periodLabel = `${startDate}〜${endDate}`;
+    return [
+      periodLabel,
+      item.cost || 0,
+      '',
+      item.imp || 0,
+      item.click || 0,
+      '',
+      item.managerCv || 0,
+      '',
+      '',
+      item.clientCv || '',
+      item.clientCvr || '',
+      item.clientCac || '',
+      item.conversionRate || ''
+    ];
+  });
+  if (dataRows.length > 0) {
+    sheet.getRange(row, startCol, dataRows.length, tableWidth).setValues(dataRows);
+    const dataStartRow = row;
+    const dataRowCount = dataRows.length;
+    applyMetricFormulas_(sheet, dataStartRow, dataRowCount, {
+      costCol: startCol + 1,
+      clickCol: startCol + 4,
+      impCol: startCol + 3,
+      convCol: startCol + 6,
+      cpcCol: startCol + 2,
+      ctrCol: startCol + 5,
+      cvrCol: startCol + 7,
+      cacCol: startCol + 8
+    });
+    sheet.getRange(dataStartRow, startCol + 1, dataRowCount, 1).setNumberFormat('"¥"#,##0');
+    sheet.getRange(dataStartRow, startCol + 2, dataRowCount, 1).setNumberFormat('"¥"#,##0.0');
+    sheet.getRange(dataStartRow, startCol + 3, dataRowCount, 2).setNumberFormat('#,##0');
+    sheet.getRange(dataStartRow, startCol + 5, dataRowCount, 1).setNumberFormat('0.00%');
+    sheet.getRange(dataStartRow, startCol + 6, dataRowCount, 1).setNumberFormat('#,##0');
+    sheet.getRange(dataStartRow, startCol + 7, dataRowCount, 1).setNumberFormat('0.00%');
+    sheet.getRange(dataStartRow, startCol + 8, dataRowCount, 1).setNumberFormat('"¥"#,##0');
+    row += dataRowCount;
+  }
+  const tableRows = row - headerRow;
+  sheet.getRange(headerRow, startCol, tableRows, tableWidth)
+    .setBorder(true, true, true, true, true, true);
+  sheet.getRange(headerRow, startCol - 1, tableRows, 1)
+    .setBorder(false, false, false, true, false, false)
+    .clearContent();
+  sheet.getRange(headerRow, startCol, 1, tableWidth).setHorizontalAlignment('center');
+  const weeklyDataRowCount = tableRows - 1;
+  if (weeklyDataRowCount > 0) {
+    sheet.getRange(headerRow + 1, startCol, weeklyDataRowCount, 1).setHorizontalAlignment('center');
+    if (tableWidth > 1) {
+      sheet.getRange(headerRow + 1, startCol + 1, weeklyDataRowCount, tableWidth - 1)
+        .setHorizontalAlignment('right');
+    }
+  }
+  return row;
+}
+
+function applyMetricFormulas_(sheet, startRow, rowCount, config) {
+  if (!sheet || rowCount <= 0 || !config) {
+    return;
+  }
+  const buildRef = (targetCol, sourceCol) => {
+    if (typeof sourceCol !== 'number') return null;
+    const offset = sourceCol - targetCol;
+    if (offset === 0) return 'RC';
+    return `RC[${offset}]`;
+  };
+  const setDivisionFormula = (targetCol, numeratorCol, denominatorCol, options = {}) => {
+    if (typeof targetCol !== 'number') return;
+    if (typeof numeratorCol !== 'number' || typeof denominatorCol !== 'number') return;
+    const numeratorRef = buildRef(targetCol, numeratorCol);
+    const denominatorRef = buildRef(targetCol, denominatorCol);
+    if (!numeratorRef || !denominatorRef) return;
+    let expression = `${numeratorRef}/${denominatorRef}`;
+    if (options.multiplier) {
+      expression = `${expression}*${options.multiplier}`;
+    }
+    const zeroValue = Object.prototype.hasOwnProperty.call(options, 'zeroValue') ? options.zeroValue : '0';
+    const formula = `=IF(${denominatorRef}>0, ${expression}, ${zeroValue})`;
+    sheet.getRange(startRow, targetCol, rowCount, 1).setFormulaR1C1(formula);
+  };
+
+  if (config.cpcCol !== undefined) {
+    setDivisionFormula(config.cpcCol, config.costCol, config.clickCol);
+  }
+  if (config.cpmCol !== undefined) {
+    setDivisionFormula(config.cpmCol, config.costCol, config.impCol, { multiplier: 1000 });
+  }
+  if (config.ctrCol !== undefined) {
+    setDivisionFormula(config.ctrCol, config.clickCol, config.impCol);
+  }
+  if (config.cvrCol !== undefined) {
+    setDivisionFormula(config.cvrCol, config.convCol, config.clickCol);
+  }
+  if (config.cacCol !== undefined) {
+    setDivisionFormula(config.cacCol, config.costCol, config.convCol, { zeroValue: config.cacZeroText || '"-"' });
+  }
+  if (config.lpRateCol !== undefined) {
+    setDivisionFormula(config.lpRateCol, config.lpCol, config.clickCol, { zeroValue: config.lpRateZeroText || '""' });
+  }
+}
+
+function getMonthlySummaryData_(monthlyFiles) {
+  const data = [];
+  const sorted = [...monthlyFiles].sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+  sorted.forEach(fileInfo => {
+    const summary = extractSummaryFromCsv_(fileInfo.file);
+    if (summary) {
+      let monthLabel = fileInfo.name.replace(/\.csv$/i, '');
+      // ファイル名の「10月」「１０月」などから月ラベルを抽出（半角/全角数字どちらも対応）
+      const monthMatch = monthLabel.match(/([0-9０-９]{1,2})月/);
+      if (monthMatch) {
+        monthLabel = monthMatch[0];
+      }
+      data.push({ month: monthLabel, ...summary });
+    }
+  });
+  return data;
+}
+
+function getWeeklySummaryData_(sortedWeeks) {
+  const data = [];
+  sortedWeeks.forEach(([weekKey, group]) => {
+    if (!group.cpn || group.cpn.length === 0) return;
+    const summary = extractSummaryFromCsv_(group.cpn[0].file);
+    if (summary) {
+      data.push({ week: weekKey, ...summary });
+    }
+  });
+  return data;
+}
+
+function extractSummaryFromCsv_(file) {
+  try {
+    const rows = Utilities.parseCsv(file.getBlob().getDataAsString('UTF-8'));
+    if (!rows || rows.length < 2) return null;
+
+    // ヘッダー行が先頭行とは限らないため、
+    // 「Amount Spent / Impressions / Clicks / Conversions (Click)」などを含む行をヘッダーとみなす
+    let headerRowIndex = 0;
+    for (let i = 0; i < rows.length; i++) {
+      const line = rows[i] || [];
+      const joined = line.join(' ').toLowerCase();
+      if (
+        joined.includes('amount spent') ||
+        joined.includes('impressions') ||
+        joined.includes('clicks') ||
+        joined.includes('conversions (click)')
+      ) {
+        headerRowIndex = i;
+        break;
+      }
+    }
+
+    const header = rows[headerRowIndex];
+    const headerNormalized = header.map(normalizeHeader_);
+    const indices = findColumnIndices(header, OUTBRAIN_CSV_COLUMN_TITLES);
+    const idxCampaignName = header.findIndex(h => {
+      if (!h) return false;
+      const normalized = h.trim().toLowerCase().replace(/\s+/g, ' ');
+      return normalized === 'campaign name';
+    });
+    let idxCost = indices[3];
+    let idxImp = indices[4];
+    let idxClick = indices[6];
+    let idxConv = indices[8];
+    if (idxCost < 0) idxCost = findColumnIndexByKeywords_(headerNormalized, ['amount spent', 'spend', '配信金額']);
+    if (idxImp < 0) idxImp = findColumnIndexByKeywords_(headerNormalized, ['impressions', 'imp', 'インプレッション']);
+    if (idxClick < 0) idxClick = findColumnIndexByKeywords_(headerNormalized, ['clicks', 'click', 'クリック']);
+    if (idxConv < 0) idxConv = findColumnIndexByKeywords_(headerNormalized, ['conversions (click)', 'conversions', 'cv', 'コンバージョン']);
+
+    let dataRow = null;
+    for (let i = headerRowIndex + 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.length === 0) continue;
+      const campaignName = idxCampaignName >= 0 ? String(row[idxCampaignName] || '').trim().toLowerCase() : '';
+      if (campaignName === 'total' || campaignName === '合計' || campaignName === 'totals') {
+        dataRow = row;
+        break;
+      }
+    }
+
+    let costRaw = 0;
+    let imp = 0;
+    let click = 0;
+    let managerCv = 0;
+
+    if (dataRow) {
+      costRaw = cleanNumericValue(idxCost >= 0 ? dataRow[idxCost] : null) || 0;
+      imp = Math.round(cleanNumericValue(idxImp >= 0 ? dataRow[idxImp] : null) || 0);
+      click = Math.round(cleanNumericValue(idxClick >= 0 ? dataRow[idxClick] : null) || 0);
+      managerCv = Math.round(cleanNumericValue(idxConv >= 0 ? dataRow[idxConv] : null) || 0);
+    } else {
+      for (let i = headerRowIndex + 1; i < rows.length; i++) {
+        const row = rows[i];
+        if (!row || row.length === 0) continue;
+        const campaignName = idxCampaignName >= 0 ? String(row[idxCampaignName] || '').trim().toLowerCase() : '';
+        if (campaignName === 'total' || campaignName === '合計' || campaignName === 'totals') continue;
+        costRaw += cleanNumericValue(idxCost >= 0 ? row[idxCost] : null) || 0;
+        imp += cleanNumericValue(idxImp >= 0 ? row[idxImp] : null) || 0;
+        click += cleanNumericValue(idxClick >= 0 ? row[idxClick] : null) || 0;
+        managerCv += cleanNumericValue(idxConv >= 0 ? row[idxConv] : null) || 0;
+      }
+    }
+
+    if (costRaw === 0 && imp === 0 && click === 0) {
+      return null;
+    }
+
+    const cost = Math.round(costRaw * 1.1 / 0.8);
+    imp = Math.round(imp);
+    click = Math.round(click);
+    managerCv = Math.round(managerCv);
+
+    return {
+      cost,
+      imp,
+      click,
+      managerCv,
+      clientCv: '',
+      clientCvr: '',
+      clientCac: '',
+      conversionRate: ''
+    };
+  } catch (err) {
+    Logger.log('サマリー抽出失敗: ' + err.toString());
+    return null;
+  }
+}
+
+function normalizeHeader_(value) {
+  return String(value || '').replace(/\s+/g, '').toLowerCase();
+}
+
+function findColumnIndexByKeywords_(header, keywords) {
+  const normalizedKeywords = keywords.map(k => normalizeHeader_(k));
+  for (let i = 0; i < header.length; i++) {
+    const cell = normalizeHeader_(header[i]);
+    for (const keyword of normalizedKeywords) {
+      if (cell === keyword) {
+        return i;
+      }
+    }
+  }
+  for (let i = 0; i < header.length; i++) {
+    const cell = normalizeHeader_(header[i]);
+    for (const keyword of normalizedKeywords) {
+      if (cell.includes(keyword)) {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+
+function findColumnIndices(headerRow, targetTitles) {
+  return targetTitles.map(targetTitle => {
+    let index = headerRow.findIndex(header =>
+      header && header.trim() === targetTitle.trim()
+    );
+    if (index === -1) {
+      index = headerRow.findIndex(header =>
+        header && header.trim().toLowerCase() === targetTitle.trim().toLowerCase()
+      );
+    }
+    return index;
+  });
+}
+
+function formatPercentLabel_(value) {
+  if (value === null || value === undefined) return '';
+  const str = String(value).replace(/%/g, '').trim();
+  if (str === '') return '';
+  return str + '%';
+}
+
+function cleanNumericValue(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  if (typeof value === 'number') {
+    return value;
+  }
+  const cleaned = String(value).replace(/[%$¥,円]/g, '').trim();
+  const num = parseFloat(cleaned);
+  return isNaN(num) ? null : num;
+}
+
