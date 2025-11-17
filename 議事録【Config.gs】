@@ -16,16 +16,50 @@ function getConfig() {
     // 配列で複数のカレンダーを指定できます
     // 空の場合はデフォルトカレンダーを使用
     CALENDAR_ID: [
-      'c_18815k5630vvmi5pm86ekvkecbjb0@resource.calendar.google.com',
-      'c_1884emnv649mcgurlkcfrk4bemnec@resource.calendar.google.com',
-      'c_1880oeuhr2f08ik7mvc0dbd899hog@resource.calendar.google.com',
-      'c_188c2lf2fr9q6hl7lfgemtnuplu24@resource.calendar.google.com',
-      'c_188336fd92o2egkvj5oi960mrgsim@resource.calendar.google.com',
-      'c_18814aepio28kh6mmsdl3n8nlmdm8@resource.calendar.google.com',
-      'c_188bg88tck0gejslh81vla75sguio@resource.calendar.google.com',
-      'c_188b10qsgcer0jmlm967lmsc8bf7c@resource.calendar.google.com',
-      'c_18804mm2oc55eiqlgbtdtll6hqq76@resource.calendar.google.com',
-      'c_1888bbloahv8mihqgni1dp68232ls@resource.calendar.google.com'
+      'mtanaka@mirai-kirei.jp',
+      'nakamura-h@mirai-kirei.jp',
+      'kawamoto-y@mirai-kirei.jp',
+      'okumura-h@mirai-kirei.jp',
+      'majima-t@mirai-kirei.jp',
+      'takano-r@mirai-kirei.jp',
+      'hashimoto-k@mirai-kirei.jp',
+      'maeno-a@mirai-kirei.jp',
+      'tani-s@mirai-kirei.jp',
+      'yokoyama-s@mirai-kirei.jp',
+      'yoshida-k@mirai-kirei.jp',
+      'yoshida-m@mirai-kirei.jp',
+      'miyazawa-r@mirai-kirei.jp',
+      'arayashiki-r@mirai-kirei.jp',
+      'yyamada@mirai-kirei.jp',
+      'koike-m@mirai-kirei.jp',
+      'ono-h@mirai-kirei.jp',
+      'hirata-y@mirai-kirei.jp',
+      'taishisuzuki@mirai-kirei.jp',
+      'shibuya-s@mirai-kirei.jp',
+      'takahashi-r@mirai-kirei.jp',
+      'soda-c@mirai-kirei.jp',
+      'shimizu-a@mirai-kirei.jp',
+      'sugisue-r@mirai-kirei.jp',
+      'koga-s@mirai-kirei.jp',
+      'senami-y@mirai-kirei.jp',
+      'fushimi-m@mirai-kirei.jp',
+      'sato-s@mirai-kirei.jp',
+      'ito-y@mirai-kirei.jp',
+      'shimoji-t@mirai-kirei.jp',
+      'kubota-s@mirai-kirei.jp',
+      'sato-c@mirai-kirei.jp',
+      'sakamoto-m@mirai-kirei.jp',
+      'miyake-m@mirai-kirei.jp',
+      'yamashita-k@mirai-kirei.jp',
+      'yamamoto-y@mirai-kirei.jp',
+      'oooke-y@mirai-kirei.jp',
+      'hasebe-m@mirai-kirei.jp',
+      'uchida-m@mirai-kirei.jp',
+      'kusumi-m@mirai-kirei.jp',
+      'hiratani-r@mirai-kirei.jp',
+      'hirata-k@mirai-kirei.jp',
+      'hayashi-a@mirai-kirei.jp',
+      'suzuki-y@mirai-kirei.jp'
     ],
     
     // 過去何日分のイベントを取得するか（現在は使用していません。前日のみをチェックします）
@@ -46,16 +80,46 @@ function getConfig() {
       'hashimoto-k@mirai-kirei.jp',
       'maeno-a@mirai-kirei.jp',
       'tani-s@mirai-kirei.jp',
+      'ibi-h@mirai-kirei.jp',
+      'yokoyama-s@mirai-kirei.jp',
       'yoshida-k@mirai-kirei.jp',
+      'yoshida-m@mirai-kirei.jp',
       'miyazawa-r@mirai-kirei.jp',
+      'arayashiki-r@mirai-kirei.jp',
+      'yyamada@mirai-kirei.jp',
       'koike-m@mirai-kirei.jp',
       'ono-h@mirai-kirei.jp',
-      'yyamada@mirai-kirei.jp',
-      'yokoyama-s@mirai-kirei.jp',
-      'shibuya-s@mirai-kirei.jp',
-      'arayashiki-r@mirai-kirei.jp',
+      'hirata-y@mirai-kirei.jp',
       'taishisuzuki@mirai-kirei.jp',
+      'shibuya-s@mirai-kirei.jp',
       'takahashi-r@mirai-kirei.jp'
+    ],
+    
+    // パートメンバーのメールアドレスリスト
+    PART_TIMER_TEAM: [
+      'soda-c@mirai-kirei.jp',
+      'shimizu-a@mirai-kirei.jp',
+      'sugisue-r@mirai-kirei.jp',
+      'koga-s@mirai-kirei.jp',
+      'senami-y@mirai-kirei.jp',
+      'fushimi-m@mirai-kirei.jp',
+      'sato-s@mirai-kirei.jp',
+      'ito-y@mirai-kirei.jp',
+      'shimoji-t@mirai-kirei.jp',
+      'kubota-s@mirai-kirei.jp',
+      'sato-c@mirai-kirei.jp',
+      'sakamoto-m@mirai-kirei.jp',
+      'miyake-m@mirai-kirei.jp',
+      'yamashita-k@mirai-kirei.jp',
+      'yamamoto-y@mirai-kirei.jp',
+      'oooke-y@mirai-kirei.jp',
+      'hasebe-m@mirai-kirei.jp',
+      'uchida-m@mirai-kirei.jp',
+      'kusumi-m@mirai-kirei.jp',
+      'hiratani-r@mirai-kirei.jp',
+      'hirata-k@mirai-kirei.jp',
+      'hayashi-a@mirai-kirei.jp',
+      'suzuki-y@mirai-kirei.jp'
     ],
     
     // メールアドレスから担当者名へのマッピング
@@ -69,17 +133,48 @@ function getConfig() {
       'hashimoto-k@mirai-kirei.jp': '橋本幹太',
       'maeno-a@mirai-kirei.jp': '前野綾樹',
       'tani-s@mirai-kirei.jp': '谷颯真',
+      'ibi-h@mirai-kirei.jp': '井比博',
       'yoshida-k@mirai-kirei.jp': '吉田紀久子',
+      'yoshida-m@mirai-kirei.jp': '吉田萌',
       'miyazawa-r@mirai-kirei.jp': '宮沢麗子',
       'koike-m@mirai-kirei.jp': '小池勝也',
       'ono-h@mirai-kirei.jp': '小野秀明',
+      'hirata-y@mirai-kirei.jp': '平田佑香',
       'yyamada@mirai-kirei.jp': '山田善丈',
       'yokoyama-s@mirai-kirei.jp': '横山颯',
       'shibuya-s@mirai-kirei.jp': '澁谷悟',
       'arayashiki-r@mirai-kirei.jp': '荒屋敷陸斗',
       'taishisuzuki@mirai-kirei.jp': '鈴木太志',
-      'takahashi-r@mirai-kirei.jp': '髙橋諒太'
+      'takahashi-r@mirai-kirei.jp': '髙橋諒太',
+      'soda-c@mirai-kirei.jp': '宗田ちづる',
+      'shimizu-a@mirai-kirei.jp': '清水あす香',
+      'sugisue-r@mirai-kirei.jp': '杉末莉沙',
+      'koga-s@mirai-kirei.jp': '古賀周子',
+      'senami-y@mirai-kirei.jp': '瀬並裕美子',
+      'fushimi-m@mirai-kirei.jp': '伏見真央',
+      'sato-s@mirai-kirei.jp': '佐藤翔子',
+      'ito-y@mirai-kirei.jp': '伊東由貴子',
+      'shimoji-t@mirai-kirei.jp': '下地つばさ',
+      'kubota-s@mirai-kirei.jp': '久保田沙希',
+      'sato-c@mirai-kirei.jp': '佐藤千恵',
+      'sakamoto-m@mirai-kirei.jp': '坂元萌子',
+      'miyake-m@mirai-kirei.jp': '三宅萌',
+      'yamashita-k@mirai-kirei.jp': '山下和美',
+      'yamamoto-y@mirai-kirei.jp': '山本由夏',
+      'oooke-y@mirai-kirei.jp': '大桶百合子',
+      'hasebe-m@mirai-kirei.jp': '長谷部まりえ',
+      'uchida-m@mirai-kirei.jp': '内田萌恵',
+      'kusumi-m@mirai-kirei.jp': '楠美美有紀',
+      'hiratani-r@mirai-kirei.jp': '平谷里砂',
+      'hirata-k@mirai-kirei.jp': '平田華奈子',
+      'hayashi-a@mirai-kirei.jp': '林梓',
+      'suzuki-y@mirai-kirei.jp': '鈴木由佳理'
     },
+    
+    // 担当者から除外したいメールアドレス（例: 代理カレンダー）
+    EXCLUDED_RESPONSIBLE_EMAILS: [
+      'ibi-h@mirai-kirei.jp'
+    ],
     
     // ============================================
     // MKシステム設定
@@ -121,6 +216,22 @@ function getConfig() {
       }
     },
     
+    // MKシステムの手動登録状況を管理しているスプレッドシート
+    MK_REGISTRATION_SHEET: {
+      // MKシステムで登録済みの議事録を記録しているスプレッドシートのID
+      SPREADSHEET_ID: '',
+      // GASがアクセスできる同一スプレッドシート内に手動貼り付けする場合のシート名
+      LOCAL_SHEET_NAME: 'MK登録済み一覧',
+      // 外部スプレッドシートを参照する場合のシート名
+      SHEET_NAME: 'MK議事録',
+      // ヘッダー名（手動登録シート側）の指定
+      DATE_COLUMN: '日付',
+      START_TIME_COLUMN: '開始時刻',
+      EMAIL_COLUMN: '担当者メールアドレス',
+      // ステータス欄に表示する値（例: 済）
+      STATUS_VALUE: '済'
+    },
+    
     // ============================================
     // スプレッドシート設定
     // ============================================
@@ -135,6 +246,22 @@ function getConfig() {
     
     // スプレッドシートのシート名
     SHEET_NAME: '議事録',
+    // MKシステムへの登録状況を表示する列のヘッダー
+    REGISTRATION_STATUS_HEADER: 'MK登録状況',
+    // 担当者メールアドレス列のヘッダー
+    RESPONSIBLE_EMAIL_HEADER: '担当者メールアドレス',
+    // 参加者列のヘッダー
+    PARTICIPANT_HEADER: '参加者',
+    // 場所列のヘッダー
+    LOCATION_HEADER: '場所',
+    
+    // チャットワーク連携設定
+    CHATWORK: {
+      ENABLED: false, // trueにするとリマインド送信を有効化
+      API_TOKEN: "your-chatwork-api-token",
+      ROOM_ID: "138351493",
+      REMINDER_TEMPLATE: "[info][title]MKシステム未登録の議事録[/title]%DETAILS%[/info]"
+    },
     
     // ============================================
     // その他の設定
