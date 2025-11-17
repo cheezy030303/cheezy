@@ -12,19 +12,14 @@ function main() {
     // 設定を読み込み
     const config = getConfig();
     
-    // 対象期間：前日のカレンダーをチェック
-    // 前日の00:00:00から23:59:59まで
+    // 対象期間：前日（00:00:00 ～ 23:59:59）
     const today = new Date();
-    today.setHours(0, 0, 0, 0); // 今日の00:00:00
-    
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1); // 前日の00:00:00
-    
-    const startDate = new Date(yesterday);
+    const startDate = new Date(today);
+    startDate.setDate(startDate.getDate() - 1);
     startDate.setHours(0, 0, 0, 0);
     
-    const endDate = new Date(yesterday);
-    endDate.setHours(23, 59, 59, 999); // 前日の23:59:59
+    const endDate = new Date(startDate);
+    endDate.setHours(23, 59, 59, 999);
     
     Logger.log(`対象期間: ${startDate.toLocaleString('ja-JP')} ～ ${endDate.toLocaleString('ja-JP')}`);
     
@@ -32,7 +27,7 @@ function main() {
     const events = getCalendarEvents(startDate, endDate);
     
     // ★印がついていて、マーケティング部のメンバーが参加しているイベントをフィルタリング
-    const targetEvents = filterMarketingEvents(events, config.MARKETING_TEAM);
+    const targetEvents = filterMarketingEvents(events, config);
     
     Logger.log(`対象イベント数: ${targetEvents.length}`);
     
@@ -45,10 +40,17 @@ function main() {
     
     // すべての会議データを抽出
     const allMeetingData = [];
-    for (const event of targetEvents) {
-      const meetingData = extractMeetingData(event);
-      allMeetingData.push(meetingData);
+  for (const event of targetEvents) {
+    const meetingData = extractMeetingData(event);
+    if (!meetingData) {
+      continue;
     }
+    if (shouldSkipMeeting(meetingData, config)) {
+      Logger.log(`担当者除外設定のためスキップ: ${meetingData.clientName} - ${meetingData.date} 担当者: ${meetingData.responsiblePersonEmail}`);
+      continue;
+    }
+    allMeetingData.push(meetingData);
+  }
     
     // スプレッドシートに書き込み
     if (allMeetingData.length > 0) {
@@ -56,6 +58,8 @@ function main() {
       Logger.log(`${allMeetingData.length}件のデータをスプレッドシートに記録しました`);
       Logger.log(`スプレッドシートURL: ${spreadsheet.getUrl()}`);
     }
+    
+    synchronizeRegistrationStatus(sheet, config, spreadsheet);
     
     // MKシステムに登録（エラーが発生してもスプレッドシートへの記録は完了している）
     let mkSystemSuccessCount = 0;
@@ -160,7 +164,7 @@ function getCalendarEvents(startDate, endDate) {
  * @param {Array} marketingTeam - マーケティング部のメールアドレス配列
  * @return {Array} フィルタリングされたイベント配列
  */
-function filterMarketingEvents(events, marketingTeam) {
+function filterMarketingEvents(events, config) {
   // まずすべてのイベントのタイトルをログに出力（デバッグ用）
   Logger.log(`取得した全イベント一覧:`);
   events.forEach((event, index) => {
@@ -205,9 +209,7 @@ function filterMarketingEvents(events, marketingTeam) {
     
     // マーケティング部のメンバーが1人以上参加しているか
     const hasMarketingMember = allParticipants.some(participant => 
-      marketingTeam.some(teamMember => 
-        participant.toLowerCase() === teamMember.toLowerCase()
-      )
+      isTeamMemberEmail(participant, config)
     );
     
     if (hasMarketingMember) {
@@ -264,39 +266,41 @@ function extractMeetingData(event) {
  * @return {Object} {name: 担当者名, email: メールアドレス}
  */
 function getResponsiblePerson(event, config) {
-  // 1. まずイベントの作成者をチェック
   const creators = event.getCreators();
-  for (const creator of creators) {
-    if (config.MARKETING_TEAM.some(member => 
-      creator.toLowerCase() === member.toLowerCase()
-    )) {
-      return {
-        name: config.EMAIL_TO_NAME[creator] || creator,
-        email: creator
-      };
-    }
+  const guestEmails = event.getGuestList().map(guest => guest.getEmail());
+  
+  const employeeCreator = findFirstMatch(creators, email => isEmployeeEmail(email, config));
+  if (employeeCreator && !isExcludedResponsibleEmail(employeeCreator, config)) {
+    return {
+      name: config.EMAIL_TO_NAME[employeeCreator] || employeeCreator,
+      email: employeeCreator
+    };
   }
   
-  // 2. 次に参加者リストの最初のマーケティング部メンバーを探す
-  const guests = event.getGuestList();
-  for (const guest of guests) {
-    const email = guest.getEmail();
-    if (config.MARKETING_TEAM.some(member => 
-      email.toLowerCase() === member.toLowerCase()
-    )) {
-      return {
-        name: config.EMAIL_TO_NAME[email] || email,
-        email: email
-      };
-    }
+  const employeeGuest = findFirstMatch(guestEmails, email => isEmployeeEmail(email, config));
+  if (employeeGuest && !isExcludedResponsibleEmail(employeeGuest, config)) {
+    return {
+      name: config.EMAIL_TO_NAME[employeeGuest] || employeeGuest,
+      email: employeeGuest
+    };
   }
   
-  // 見つからない場合は最初のマーケティング部メンバーをデフォルトとして返す
-  Logger.log(`警告: マーケティング部メンバーが見つかりませんでした: ${event.getTitle()}`);
-  const firstMember = config.MARKETING_TEAM[0];
+  const teamMember = findFirstMatch([...creators, ...guestEmails], email => isTeamMemberEmail(email, config));
+  if (teamMember && !isExcludedResponsibleEmail(teamMember, config)) {
+    const fallbackEmployee = findFirstMatch(config.MARKETING_TEAM || [], email => !isExcludedResponsibleEmail(email, config));
+    return {
+      name: fallbackEmployee ? (config.EMAIL_TO_NAME[fallbackEmployee] || fallbackEmployee) : (config.EMAIL_TO_NAME[teamMember] || teamMember),
+      email: fallbackEmployee || teamMember
+    };
+  }
+  
+  Logger.log(`警告: チームメンバーが見つからないためデフォルトを使用します: ${event.getTitle()}`);
+  const defaultMember = findFirstMatch(config.MARKETING_TEAM || [], email => !isExcludedResponsibleEmail(email, config)) ||
+                        findFirstMatch(getAllTeamMembers(config), email => !isExcludedResponsibleEmail(email, config)) ||
+                        'unknown@mirai-kirei.jp';
   return {
-    name: config.EMAIL_TO_NAME[firstMember] || firstMember,
-    email: firstMember
+    name: config.EMAIL_TO_NAME[defaultMember] || defaultMember,
+    email: defaultMember
   };
 }
 
@@ -308,31 +312,20 @@ function getResponsiblePerson(event, config) {
  */
 function getAllMarketingAttendees(event, config) {
   const marketingAttendees = [];
+  const addEmailIfNeeded = (email) => {
+    if (!email) {
+      return;
+    }
+    if (isTeamMemberEmail(email, config) && !containsEmail(marketingAttendees, email)) {
+      marketingAttendees.push(email);
+    }
+  };
   
-  // 作成者をチェック
   const creators = event.getCreators();
-  for (const creator of creators) {
-    if (config.MARKETING_TEAM.some(member => 
-      creator.toLowerCase() === member.toLowerCase()
-    )) {
-      if (!marketingAttendees.includes(creator)) {
-        marketingAttendees.push(creator);
-      }
-    }
-  }
+  creators.forEach(addEmailIfNeeded);
   
-  // 参加者をチェック
   const guests = event.getGuestList();
-  for (const guest of guests) {
-    const email = guest.getEmail();
-    if (config.MARKETING_TEAM.some(member => 
-      email.toLowerCase() === member.toLowerCase()
-    )) {
-      if (!marketingAttendees.includes(email)) {
-        marketingAttendees.push(email);
-      }
-    }
-  }
+  guests.forEach(guest => addEmailIfNeeded(guest.getEmail()));
   
   return marketingAttendees;
 }
@@ -425,39 +418,120 @@ function getOrCreateSheet(spreadsheet, sheetName) {
  * @param {Sheet} sheet - シートオブジェクト
  */
 function setupSheetHeaders(sheet) {
-  const headerRange = sheet.getRange(1, 1, 1, 7);
-  const headers = headerRange.getValues()[0];
-  
-  // ヘッダーが既に設定されている場合はスキップ
-  if (headers[0] !== '') {
-    return;
-  }
-  
-  // ヘッダー行を設定
-  const headerValues = [
+  const config = getConfig();
+  const statusHeader = config.REGISTRATION_STATUS_HEADER || 'MK登録状況';
+  const emailHeader = config.RESPONSIBLE_EMAIL_HEADER || '担当者メールアドレス';
+  const participantHeader = config.PARTICIPANT_HEADER || '参加者';
+  const locationHeader = config.LOCATION_HEADER || '場所';
+  const baseHeaders = [
     '日付',
     '開始時刻',
     '終了時刻',
     'クライアント名',
     '担当者',
-    'マーケティング部参加者',
-    '備考'
+    emailHeader,
+    participantHeader,
+    locationHeader,
+    statusHeader
   ];
   
-  headerRange.setValues([headerValues]);
+  const headerRange = sheet.getRange(1, 1, 1, baseHeaders.length);
+  let headers = headerRange.getValues()[0];
+  const isInitialized = headers[0] !== '';
   
-  // ヘッダー行の書式設定
-  headerRange.setFontWeight('bold');
-  headerRange.setBackground('#4285f4');
-  headerRange.setFontColor('#ffffff');
+  if (!isInitialized) {
+    headerRange.setValues([baseHeaders]);
+    headerRange.setFontWeight('bold');
+    headerRange.setBackground('#4285f4');
+    headerRange.setFontColor('#ffffff');
+    Logger.log('ヘッダー行を設定しました');
+  } else {
+    // 担当者メール列が存在しなければ追加
+    if (headers.indexOf(emailHeader) === -1) {
+      const responsibleIndex = headers.indexOf('担当者');
+      if (responsibleIndex !== -1) {
+        sheet.insertColumnAfter(responsibleIndex + 1);
+        const emailCell = sheet.getRange(1, responsibleIndex + 2);
+        emailCell.setValue(emailHeader);
+        emailCell.setFontWeight('bold');
+        emailCell.setBackground('#4285f4');
+        emailCell.setFontColor('#ffffff');
+        Logger.log(`ヘッダーに${emailHeader}列を追加しました`);
+      }
+    }
+    
+    headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    
+    // 参加者列のヘッダーを更新または追加
+    if (headers.indexOf(participantHeader) === -1) {
+      const oldParticipantIndex = headers.indexOf('マーケティング部参加者');
+      if (oldParticipantIndex !== -1) {
+        const participantCell = sheet.getRange(1, oldParticipantIndex + 1);
+        participantCell.setValue(participantHeader);
+        participantCell.setFontWeight('bold');
+        participantCell.setBackground('#4285f4');
+        participantCell.setFontColor('#ffffff');
+        Logger.log(`ヘッダーを${participantHeader}へ更新しました`);
+      } else {
+        const emailIndex = headers.indexOf(emailHeader);
+        const insertColumn = emailIndex !== -1 ? (emailIndex + 1) : sheet.getLastColumn();
+        sheet.insertColumnAfter(insertColumn);
+        const participantCell = sheet.getRange(1, insertColumn + 1);
+        participantCell.setValue(participantHeader);
+        participantCell.setFontWeight('bold');
+        participantCell.setBackground('#4285f4');
+        participantCell.setFontColor('#ffffff');
+        Logger.log(`ヘッダーに${participantHeader}列を追加しました`);
+      }
+    }
+    
+    headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    
+    // 場所列ヘッダーを設定
+    const locationIndex = headers.indexOf(locationHeader);
+    if (locationIndex === -1) {
+      const oldNoteIndex = headers.indexOf('備考');
+      if (oldNoteIndex !== -1) {
+        const locationCell = sheet.getRange(1, oldNoteIndex + 1);
+        locationCell.setValue(locationHeader);
+        locationCell.setFontWeight('bold');
+        locationCell.setBackground('#4285f4');
+        locationCell.setFontColor('#ffffff');
+        Logger.log(`ヘッダーを${locationHeader}へ更新しました`);
+      } else {
+        const insertPosition = headers.indexOf(participantHeader);
+        const targetColumn = insertPosition !== -1 ? insertPosition + 1 : sheet.getLastColumn();
+        sheet.insertColumnAfter(targetColumn);
+        const locationCell = sheet.getRange(1, targetColumn + 1);
+        locationCell.setValue(locationHeader);
+        locationCell.setFontWeight('bold');
+        locationCell.setBackground('#4285f4');
+        locationCell.setFontColor('#ffffff');
+        Logger.log(`ヘッダーに${locationHeader}列を追加しました`);
+      }
+    }
+    
+    headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    
+    if (headers.indexOf(statusHeader) === -1) {
+      const statusColumnIndex = sheet.getLastColumn() + 1;
+      sheet.insertColumnAfter(sheet.getLastColumn());
+      const statusCell = sheet.getRange(1, statusColumnIndex);
+      statusCell.setValue(statusHeader);
+      statusCell.setFontWeight('bold');
+      statusCell.setBackground('#4285f4');
+      statusCell.setFontColor('#ffffff');
+      Logger.log(`ヘッダーに${statusHeader}列を追加しました`);
+    }
+  }
   
   // 列幅を指定
-  const columnWidths = [65, 100, 100, 250, 100, 250, 350]; // A列からG列
+  const columnWidths = [100, 100, 100, 280, 100, 260, 400, 350, 120]; // A列からI列
   for (let i = 0; i < columnWidths.length; i++) {
     sheet.setColumnWidth(i + 1, columnWidths[i]);
   }
   
-  Logger.log('ヘッダー行を設定しました');
+  backfillResponsibleEmails(sheet, config);
 }
 
 /**
@@ -529,8 +603,10 @@ function writeToSpreadsheet(sheet, meetingDataList) {
     meetingData.endTime,
     meetingData.clientName,
     meetingData.responsiblePerson,
+    meetingData.responsiblePersonEmail || '',
     meetingData.marketingAttendees,
-    meetingData.description
+    meetingData.location || '',
+    ''
   ]);
   
   // データを書き込み
@@ -543,6 +619,594 @@ function writeToSpreadsheet(sheet, meetingDataList) {
   dateRange.setNumberFormat('yyyy-mm-dd');
   
   Logger.log(`${values.length}行の新しいデータをスプレッドシートに書き込みました（${meetingDataList.length - values.length}件は重複のためスキップ）`);
+}
+
+/**
+ * 担当者メール列を既存データに対して補完
+ * @param {Sheet} sheet - 議事録シート
+ * @param {Object} config - 設定オブジェクト
+ */
+function backfillResponsibleEmails(sheet, config) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) {
+    return;
+  }
+  
+  const headerRow = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const nameIndex = headerRow.indexOf('担当者');
+  const emailHeader = config.RESPONSIBLE_EMAIL_HEADER || '担当者メールアドレス';
+  const emailIndex = headerRow.indexOf(emailHeader);
+  
+  if (nameIndex === -1 || emailIndex === -1) {
+    return;
+  }
+  
+  const nameRange = sheet.getRange(2, nameIndex + 1, lastRow - 1, 1).getValues();
+  const emailRange = sheet.getRange(2, emailIndex + 1, lastRow - 1, 1);
+  const emailValues = emailRange.getValues();
+  const nameToEmail = getNameToEmailMap(config);
+  let needsUpdate = false;
+  
+  for (let i = 0; i < nameRange.length; i++) {
+    if (emailValues[i][0]) {
+      continue;
+    }
+    
+    const nameValue = nameRange[i][0] ? nameRange[i][0].toString().trim() : '';
+    if (nameValue === '') {
+      continue;
+    }
+    
+    if (nameValue.includes('@')) {
+      emailValues[i][0] = nameValue;
+      needsUpdate = true;
+      continue;
+    }
+    
+    const email = nameToEmail[nameValue];
+    if (email) {
+      emailValues[i][0] = email;
+      needsUpdate = true;
+    }
+  }
+  
+  if (needsUpdate) {
+    emailRange.setValues(emailValues);
+    Logger.log('担当者メール列を既存データに対して補完しました');
+  }
+}
+
+/**
+ * 担当者名からメールアドレスを引くマップを生成
+ * @param {Object} config - 設定オブジェクト
+ * @return {Object} 名前→メールのマップ
+ */
+function getNameToEmailMap(config) {
+  const map = {};
+  const emailToName = config.EMAIL_TO_NAME || {};
+  for (const email in emailToName) {
+    if (!emailToName.hasOwnProperty(email)) {
+      continue;
+    }
+    const name = emailToName[email];
+    if (name && !map[name]) {
+      map[name] = email;
+    }
+  }
+  return map;
+}
+
+/**
+ * 設定により登録をスキップするか
+ * @param {Object} meetingData - 抽出済み会議データ
+ * @param {Object} config - 設定オブジェクト
+ * @return {Boolean}
+ */
+function shouldSkipMeeting(meetingData, config) {
+  if (!meetingData) {
+    return true;
+  }
+  return isExcludedResponsibleEmail(meetingData.responsiblePersonEmail, config);
+}
+
+/**
+ * チームメンバー（社員+パート）のメールアドレス一覧を取得
+ * @param {Object} config - 設定オブジェクト
+ * @return {Array} メールアドレス配列
+ */
+function getAllTeamMembers(config) {
+  const marketingTeam = config.MARKETING_TEAM || [];
+  const partTimerTeam = config.PART_TIMER_TEAM || [];
+  const merged = [...marketingTeam, ...partTimerTeam];
+  const unique = [];
+  merged.forEach(email => {
+    if (email && !containsEmail(unique, email)) {
+      unique.push(email);
+    }
+  });
+  return unique;
+}
+
+/**
+ * メールが社員かどうかを判定
+ * @param {String} email - メールアドレス
+ * @param {Object} config - 設定オブジェクト
+ * @return {Boolean}
+ */
+function isEmployeeEmail(email, config) {
+  return containsEmail(config.MARKETING_TEAM || [], email);
+}
+
+/**
+ * メールが社員またはパートのいずれかかを判定
+ * @param {String} email - メールアドレス
+ * @param {Object} config - 設定オブジェクト
+ * @return {Boolean}
+ */
+function isTeamMemberEmail(email, config) {
+  if (!email) {
+    return false;
+  }
+  const teamMembers = getAllTeamMembers(config);
+  return containsEmail(teamMembers, email);
+}
+
+/**
+ * 担当者として使用したくないメールか判定
+ * @param {String} email - メールアドレス
+ * @param {Object} config - 設定オブジェクト
+ * @return {Boolean}
+ */
+function isExcludedResponsibleEmail(email, config) {
+  if (!email) {
+    return false;
+  }
+  const excluded = config.EXCLUDED_RESPONSIBLE_EMAILS || [];
+  return containsEmail(excluded, email);
+}
+
+/**
+ * メールアドレス配列に同じメールが含まれているか（大小文字無視）
+ * @param {Array} list - メールアドレス配列
+ * @param {String} email - メールアドレス
+ * @return {Boolean}
+ */
+function containsEmail(list, email) {
+  if (!email || !Array.isArray(list)) {
+    return false;
+  }
+  const normalized = normalizeEmail(email);
+  return list.some(item => normalizeEmail(item) === normalized);
+}
+
+/**
+ * メールアドレスを正規化
+ * @param {String} email - メールアドレス
+ * @return {String}
+ */
+function normalizeEmail(email) {
+  return email ? email.toString().trim().toLowerCase() : '';
+}
+
+/**
+ * メール配列から条件にマッチする最初のメールを取得
+ * @param {Array} emails - メールアドレス配列
+ * @param {Function} predicate - 判定関数
+ * @return {String|null} マッチしたメールアドレス
+ */
+function findFirstMatch(emails, predicate) {
+  if (!Array.isArray(emails)) {
+    return null;
+  }
+  for (const email of emails) {
+    if (email && predicate(email)) {
+      return email;
+    }
+  }
+  return null;
+}
+
+/**
+ * MKシステムの登録済みデータと比較してステータス列を更新
+ * @param {Sheet} sheet - 議事録シート
+ * @param {Object} config - 設定オブジェクト
+ */
+function synchronizeRegistrationStatus(sheet, config, targetSpreadsheet) {
+  const registeredMeetings = getRegisteredMeetingsFromSpreadsheet(config, targetSpreadsheet);
+  if (registeredMeetings === null) {
+    return;
+  }
+  updateRegistrationStatusColumn(sheet, registeredMeetings, config);
+}
+
+/**
+ * チャットワークリマインドを送信
+ */
+function sendChatworkReminders() {
+  const config = getConfig();
+  if (!isChatworkConfigured(config)) {
+    Logger.log('チャットワーク設定が無効のため、リマインドをスキップします');
+    return;
+  }
+  
+  const spreadsheet = getOrCreateSpreadsheet(config);
+  const sheet = getOrCreateSheet(spreadsheet, config.SHEET_NAME);
+  setupSheetHeaders(sheet);
+  
+  // 最新の登録状況を反映
+  synchronizeRegistrationStatus(sheet, config, spreadsheet);
+  
+  const pendingMeetings = getPendingMeetings(sheet, config);
+  if (pendingMeetings.length === 0) {
+    Logger.log('リマインド対象の未登録データはありません');
+    return;
+  }
+  
+  const messageBody = buildChatworkMessage(pendingMeetings, config);
+  postChatworkMessage(messageBody, config.CHATWORK);
+  Logger.log(`チャットワークへ未登録リマインドを送信しました（${pendingMeetings.length}件）`);
+}
+
+/**
+ * リマインド対象のミーティング一覧を取得
+ * @param {Sheet} sheet - 議事録シート
+ * @param {Object} config - 設定
+ * @return {Array<Object>} 未登録ミーティング
+ */
+function getPendingMeetings(sheet, config) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) {
+    return [];
+  }
+  
+  const lastColumn = sheet.getLastColumn();
+  const headers = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  const statusHeader = config.REGISTRATION_STATUS_HEADER || 'MK登録状況';
+  const emailHeader = config.RESPONSIBLE_EMAIL_HEADER || '担当者メールアドレス';
+  const indexes = {
+    date: headers.indexOf('日付'),
+    start: headers.indexOf('開始時刻'),
+    end: headers.indexOf('終了時刻'),
+    client: headers.indexOf('クライアント名'),
+    responsible: headers.indexOf('担当者'),
+    email: headers.indexOf(emailHeader),
+    status: headers.indexOf(statusHeader)
+  };
+  
+  if (indexes.date === -1 || indexes.start === -1 || indexes.end === -1 ||
+      indexes.client === -1 || indexes.responsible === -1 || indexes.email === -1 ||
+      indexes.status === -1) {
+    Logger.log('リマインド対象抽出に必要な列が見つからないため、スキップします');
+    return [];
+  }
+  
+  const dataRange = sheet.getRange(2, 1, lastRow - 1, lastColumn).getValues();
+  const timezone = config.TIMEZONE || Session.getScriptTimeZone();
+  const pending = [];
+  
+  dataRange.forEach(row => {
+    const statusValue = row[indexes.status];
+    if (statusValue && statusValue.toString().trim() !== '') {
+      return;
+    }
+    
+    const dateValue = formatDateCell(row[indexes.date], timezone);
+    const startValue = formatTimeCell(row[indexes.start], timezone);
+    const endValue = formatTimeCell(row[indexes.end], timezone);
+    const clientValue = row[indexes.client] ? row[indexes.client].toString().trim() : '';
+    const responsibleName = row[indexes.responsible] ? row[indexes.responsible].toString().trim() : '';
+    const responsibleEmail = row[indexes.email] ? row[indexes.email].toString().trim() : '';
+    
+    if (!dateValue || !startValue) {
+      return;
+    }
+    
+    pending.push({
+      date: dateValue,
+      startTime: startValue,
+      endTime: endValue,
+      clientName: clientValue,
+      responsibleName: responsibleName,
+      responsibleEmail: responsibleEmail
+    });
+  });
+  
+  return pending;
+}
+
+/**
+ * チャットワーク送信用メッセージを生成
+ * @param {Array<Object>} meetings - 未登録ミーティング一覧
+ * @param {Object} config - 設定
+ * @return {String} メッセージ本文
+ */
+function buildChatworkMessage(meetings, config) {
+  const details = meetings.map(meeting => {
+    const client = meeting.clientName || 'クライアント未設定';
+    const end = meeting.endTime ? `～${meeting.endTime}` : '';
+    const responsible = meeting.responsibleName || '担当者未設定';
+    const email = meeting.responsibleEmail || '-';
+    return `・${meeting.date} ${meeting.startTime}${end} ${client}（担当: ${responsible} / ${email}）`;
+  }).join('\n');
+  
+  const template = (config.CHATWORK && config.CHATWORK.REMINDER_TEMPLATE) ||
+    '[info][title]MKシステム未登録の議事録[/title]%DETAILS%[/info]';
+  
+  return template.replace('%DETAILS%', `\n${details}\n`);
+}
+
+/**
+ * チャットワークへリマインドを送信
+ * @param {String} messageBody - 送信する本文
+ * @param {Object} chatworkConfig - チャットワーク設定
+ */
+function postChatworkMessage(messageBody, chatworkConfig) {
+  const url = `https://api.chatwork.com/v2/rooms/${chatworkConfig.ROOM_ID}/messages`;
+  const options = {
+    method: 'post',
+    headers: {
+      'X-ChatWorkToken': chatworkConfig.API_TOKEN
+    },
+    payload: {
+      body: messageBody
+    },
+    muteHttpExceptions: true
+  };
+  
+  const response = UrlFetchApp.fetch(url, options);
+  const code = response.getResponseCode();
+  const text = response.getContentText();
+  
+  if (code < 200 || code >= 300) {
+    throw new Error(`チャットワーク送信に失敗しました (${code}): ${text}`);
+  }
+  
+  Logger.log(`チャットワーク送信成功: ${text}`);
+}
+
+/**
+ * MKシステム登録済みスプレッドシートからデータを取得
+ * @param {Object} config - 設定オブジェクト
+ * @return {Set|null} 登録済み会議キーのセット（設定不足の場合はnull）
+ */
+function getRegisteredMeetingsFromSpreadsheet(config, targetSpreadsheet) {
+  const registrationConfig = config.MK_REGISTRATION_SHEET || {};
+  const timezone = config.TIMEZONE || Session.getScriptTimeZone();
+  let dataSheet = null;
+  let sourceType = '';
+  
+  if (registrationConfig.SPREADSHEET_ID) {
+    try {
+      const externalSpreadsheet = SpreadsheetApp.openById(registrationConfig.SPREADSHEET_ID);
+      dataSheet = externalSpreadsheet.getSheetByName(registrationConfig.SHEET_NAME);
+      if (!dataSheet) {
+        Logger.log(`登録済みシートが見つからないため、比較をスキップします: ${registrationConfig.SHEET_NAME}`);
+      } else {
+        sourceType = 'external';
+      }
+    } catch (error) {
+      Logger.log(`登録済みスプレッドシートにアクセスできません: ${error.toString()}`);
+    }
+  }
+  
+  if (!dataSheet && targetSpreadsheet && registrationConfig.LOCAL_SHEET_NAME) {
+    dataSheet = targetSpreadsheet.getSheetByName(registrationConfig.LOCAL_SHEET_NAME);
+    if (!dataSheet) {
+      dataSheet = targetSpreadsheet.insertSheet(registrationConfig.LOCAL_SHEET_NAME);
+      dataSheet.getRange(1, 1, 1, 3).setValues([[
+        registrationConfig.DATE_COLUMN || '日付',
+        registrationConfig.START_TIME_COLUMN || '開始時刻',
+        registrationConfig.EMAIL_COLUMN || '担当者メールアドレス'
+      ]]);
+      Logger.log(`ローカルシート${registrationConfig.LOCAL_SHEET_NAME}を新規作成しました。MKシステムの登録済み一覧を貼り付けてください。`);
+    }
+    sourceType = 'local';
+  }
+  
+  if (!dataSheet) {
+    Logger.log('MKシステム登録済みデータを取得できないため、比較をスキップします');
+    return null;
+  }
+  
+  const values = dataSheet.getDataRange().getValues();
+  if (values.length <= 1) {
+    if (sourceType === 'local') {
+      Logger.log('ローカルシートにデータがありません。MKシステムの登録済みデータを貼り付けると比較できます。');
+      return new Set();
+    }
+    Logger.log('登録済みシートにデータがないため、比較をスキップします');
+    return new Set();
+  }
+  
+    const headers = values[0];
+    const dateHeader = registrationConfig.DATE_COLUMN || '日付';
+    const startHeader = registrationConfig.START_TIME_COLUMN || '開始時刻';
+    const emailHeader = registrationConfig.EMAIL_COLUMN || '担当者メールアドレス';
+    
+    const dateIndex = headers.indexOf(dateHeader);
+    const startIndex = headers.indexOf(startHeader);
+    const emailIndex = headers.indexOf(emailHeader);
+    
+    if (dateIndex === -1 || startIndex === -1 || emailIndex === -1) {
+      Logger.log('登録済みシートのヘッダー名が設定と一致しないため、比較をスキップします');
+    return null;
+  }
+  
+  const registeredMeetings = new Set();
+  for (let i = 1; i < values.length; i++) {
+    const row = values[i];
+    const dateValue = normalizeDateValue(row[dateIndex], timezone);
+    const timeValue = normalizeTimeValue(row[startIndex], timezone);
+      const emailValue = normalizeEmail(row[emailIndex]);
+      
+      if (dateValue && timeValue && emailValue) {
+        registeredMeetings.add(buildMeetingKey(dateValue, timeValue, emailValue));
+    }
+  }
+  
+  Logger.log(`${sourceType === 'local' ? 'ローカル' : '外部'}シートから${registeredMeetings.size}件の登録済みデータを取得しました`);
+  return registeredMeetings;
+}
+
+/**
+ * ステータス列を更新
+ * @param {Sheet} sheet - 議事録シート
+ * @param {Set} registeredMeetings - 登録済み会議キーのセット
+ * @param {Object} config - 設定オブジェクト
+ */
+function updateRegistrationStatusColumn(sheet, registeredMeetings, config) {
+  if (!registeredMeetings) {
+    return;
+  }
+  
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) {
+    Logger.log('議事録シートにデータがないため、ステータス更新をスキップします');
+    return;
+  }
+  
+  const headerRow = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const dateIndex = headerRow.indexOf('日付');
+  const startIndex = headerRow.indexOf('開始時刻');
+  const emailHeader = config.RESPONSIBLE_EMAIL_HEADER || '担当者メールアドレス';
+  const emailIndex = headerRow.indexOf(emailHeader);
+  const statusHeader = config.REGISTRATION_STATUS_HEADER || 'MK登録状況';
+  const statusIndex = headerRow.indexOf(statusHeader);
+  
+  if (dateIndex === -1 || startIndex === -1 || emailIndex === -1 || statusIndex === -1) {
+    Logger.log('ステータス更新に必要な列が見つからないため、更新をスキップします');
+    return;
+  }
+  
+  const timezone = config.TIMEZONE || Session.getScriptTimeZone();
+  const statusRange = sheet.getRange(2, statusIndex + 1, lastRow - 1, 1);
+  const statusValues = statusRange.getValues();
+  const dateRange = sheet.getRange(2, dateIndex + 1, lastRow - 1, 1).getValues();
+  const startRange = sheet.getRange(2, startIndex + 1, lastRow - 1, 1).getValues();
+  const emailRange = sheet.getRange(2, emailIndex + 1, lastRow - 1, 1).getValues();
+  const statusValueText = (config.MK_REGISTRATION_SHEET && config.MK_REGISTRATION_SHEET.STATUS_VALUE) || '済';
+  
+  for (let i = 0; i < statusValues.length; i++) {
+    const dateValue = normalizeDateValue(dateRange[i][0], timezone);
+    const startValue = normalizeTimeValue(startRange[i][0], timezone);
+    const emailValue = normalizeEmail(emailRange[i][0]);
+    
+    if (dateValue && startValue && emailValue) {
+      const key = buildMeetingKey(dateValue, startValue, emailValue);
+      statusValues[i][0] = registeredMeetings.has(key) ? statusValueText : '';
+    } else {
+      statusValues[i][0] = '';
+    }
+  }
+  
+  statusRange.setValues(statusValues);
+  Logger.log('MKシステム登録状況の更新が完了しました');
+}
+
+/**
+ * 日付をyyyy-MM-dd形式に変換
+ * @param {any} value - 日付値
+ * @param {String} timezone - タイムゾーン
+ * @return {String} 正規化された日付文字列
+ */
+function formatDateCell(value, timezone) {
+  const normalized = normalizeDateValue(value, timezone);
+  if (!normalized) {
+    return '';
+  }
+  const dateObj = new Date(normalized);
+  if (isNaN(dateObj.getTime())) {
+    return normalized;
+  }
+  return Utilities.formatDate(dateObj, timezone || Session.getScriptTimeZone(), 'yyyy/MM/dd');
+}
+
+function formatTimeCell(value, timezone) {
+  const normalized = normalizeTimeValue(value, timezone);
+  if (!normalized) {
+    return '';
+  }
+  return normalized;
+}
+
+function normalizeDateValue(value, timezone) {
+  if (!value) {
+    return '';
+  }
+  
+  if (value instanceof Date) {
+    return Utilities.formatDate(value, timezone || Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  }
+  
+  const str = value.toString().trim();
+  if (str === '') {
+    return '';
+  }
+  
+  // 文字列を日付に変換
+  const parsed = new Date(str);
+  if (!isNaN(parsed.getTime())) {
+    return Utilities.formatDate(parsed, timezone || Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  }
+  
+  // yyyy/mm/dd または yyyy-mm-dd の形式を補正
+  const match = str.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/);
+  if (match) {
+    const month = match[2].padStart(2, '0');
+    const day = match[3].padStart(2, '0');
+    return `${match[1]}-${month}-${day}`;
+  }
+  
+  return str;
+}
+
+/**
+ * 時刻をHH:mm形式に変換
+ * @param {any} value - 時刻値
+ * @param {String} timezone - タイムゾーン
+ * @return {String} 正規化された時刻文字列
+ */
+function normalizeTimeValue(value, timezone) {
+  if (!value) {
+    return '';
+  }
+  
+  if (value instanceof Date) {
+    return Utilities.formatDate(value, timezone || Session.getScriptTimeZone(), 'HH:mm');
+  }
+  
+  const str = value.toString().trim();
+  if (str === '') {
+    return '';
+  }
+  
+  const match = str.match(/(\d{1,2}):(\d{2})/);
+  if (match) {
+    return `${match[1].padStart(2, '0')}:${match[2]}`;
+  }
+  
+  const parsed = new Date(str);
+  if (!isNaN(parsed.getTime())) {
+    return Utilities.formatDate(parsed, timezone || Session.getScriptTimeZone(), 'HH:mm');
+  }
+  
+  return str;
+}
+
+/**
+ * 会議データを一意に識別するキーを生成
+ * @param {String} date - 日付（yyyy-MM-dd）
+ * @param {String} startTime - 開始時刻（HH:mm）
+ * @param {String} email - メールアドレス
+ * @return {String} キー文字列
+ */
+function buildMeetingKey(date, startTime, email) {
+  return [date, startTime, normalizeEmail(email)].join('::');
+}
+
+function isChatworkConfigured(config) {
+  const chatworkConfig = config.CHATWORK || {};
+  return !!(chatworkConfig.ENABLED && chatworkConfig.API_TOKEN && chatworkConfig.ROOM_ID);
 }
 
 /**
@@ -682,6 +1346,41 @@ function deleteTrigger() {
 }
 
 /**
+ * チャットワークリマインドを毎日10:00に実行するトリガーを設定
+ */
+function setupChatworkReminderTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'sendChatworkReminders') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  ScriptApp.newTrigger('sendChatworkReminders')
+    .timeBased()
+    .everyDays(1)
+    .atHour(10)
+    .create();
+  
+  Logger.log('チャットワークリマインドを毎日10:00に実行するトリガーを設定しました');
+  SpreadsheetApp.getActiveSpreadsheet().toast('チャットワークリマインドを毎日10:00に実行します', '議事録自動登録', 5);
+}
+
+/**
+ * チャットワークリマインドのトリガーを削除
+ */
+function deleteChatworkReminderTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'sendChatworkReminders') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  Logger.log('チャットワークリマインドのトリガーを削除しました');
+  SpreadsheetApp.getActiveSpreadsheet().toast('リマインドトリガーを削除しました', '議事録自動登録', 3);
+}
+
+/**
  * スプレッドシートを開いたときにメニューを追加
  * この関数は、スプレッドシートを開いたときに自動的に実行されます
  */
@@ -689,9 +1388,13 @@ function onOpen() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu('議事録自動登録')
     .addItem('議事録を登録（前日をチェック）', 'runMain')
+    .addItem('未登録者にリマインド送信', 'runSendChatworkReminders')
     .addSeparator()
     .addItem('自動実行を設定（毎日6:00）', 'setupDailyTrigger')
     .addItem('自動実行を解除', 'deleteTrigger')
+    .addSeparator()
+    .addItem('リマインド自動送信を設定（毎日10:00）', 'setupChatworkReminderTrigger')
+    .addItem('リマインド自動送信を解除', 'deleteChatworkReminderTrigger')
     .addToUi();
 }
 
@@ -706,6 +1409,21 @@ function runMain() {
   } catch (error) {
     SpreadsheetApp.getActiveSpreadsheet().toast('エラーが発生しました: ' + error.toString(), '議事録自動登録', 10);
     Logger.log(`エラー: ${error.toString()}`);
+    throw error;
+  }
+}
+
+/**
+ * メニューからリマインド送信処理を実行
+ */
+function runSendChatworkReminders() {
+  try {
+    SpreadsheetApp.getActiveSpreadsheet().toast('リマインド送信を開始します...', '議事録自動登録', 2);
+    sendChatworkReminders();
+    SpreadsheetApp.getActiveSpreadsheet().toast('リマインド送信が完了しました', '議事録自動登録', 5);
+  } catch (error) {
+    SpreadsheetApp.getActiveSpreadsheet().toast('リマインド送信でエラー: ' + error.toString(), '議事録自動登録', 10);
+    Logger.log(`リマインド送信エラー: ${error.toString()}`);
     throw error;
   }
 }
@@ -732,7 +1450,7 @@ function runDateRange() {
     const events = getCalendarEvents(startDate, endDate);
     
     // ★印がついていて、マーケティング部のメンバーが参加しているイベントをフィルタリング
-    const targetEvents = filterMarketingEvents(events, config.MARKETING_TEAM);
+    const targetEvents = filterMarketingEvents(events, config);
     
     Logger.log(`対象イベント数: ${targetEvents.length}`);
     
@@ -747,6 +1465,12 @@ function runDateRange() {
     const allMeetingData = [];
     for (const event of targetEvents) {
       const meetingData = extractMeetingData(event);
+      if (!meetingData || shouldSkipMeeting(meetingData, config)) {
+        if (meetingData) {
+          Logger.log(`担当者除外設定のためスキップ: ${meetingData.clientName} - ${meetingData.date} 担当者: ${meetingData.responsiblePersonEmail}`);
+        }
+        continue;
+      }
       allMeetingData.push(meetingData);
     }
     
@@ -843,7 +1567,7 @@ function testSpecificDate() {
     });
     
     // ★印がついていて、マーケティング部のメンバーが参加しているイベントをフィルタリング
-    const targetEvents = filterMarketingEvents(events, config.MARKETING_TEAM);
+    const targetEvents = filterMarketingEvents(events, config);
     Logger.log(`対象イベント数: ${targetEvents.length}件`);
     
     if (targetEvents.length > 0) {
@@ -856,6 +1580,12 @@ function testSpecificDate() {
       const allMeetingData = [];
       for (const event of targetEvents) {
         const meetingData = extractMeetingData(event);
+        if (!meetingData || shouldSkipMeeting(meetingData, config)) {
+          if (meetingData) {
+            Logger.log(`担当者除外設定のためスキップ: ${meetingData.clientName} - ${meetingData.date} 担当者: ${meetingData.responsiblePersonEmail}`);
+          }
+          continue;
+        }
         allMeetingData.push(meetingData);
         Logger.log(`抽出したイベント: ${meetingData.clientName} - ${meetingData.date} ${meetingData.startTime} - 担当者: ${meetingData.responsiblePerson}`);
       }
@@ -867,6 +1597,12 @@ function testSpecificDate() {
         Logger.log(`スプレッドシートURL: ${spreadsheet.getUrl()}`);
         SpreadsheetApp.getActiveSpreadsheet().toast(`${allMeetingData.length}件のデータをスプレッドシートに記録しました`, '議事録自動登録', 5);
       }
+      
+      synchronizeRegistrationStatus(sheet, config, spreadsheet);
+      
+      synchronizeRegistrationStatus(sheet, config, spreadsheet);
+      
+      synchronizeRegistrationStatus(sheet, config, spreadsheet);
     } else {
       Logger.log('★印がついていて、マーケティング部メンバーが参加しているイベントが見つかりませんでした');
       Logger.log('ヒント: イベントのタイトルまたは説明に★が含まれているか確認してください');
@@ -901,7 +1637,7 @@ function testDateRange() {
     Logger.log(`取得したイベント数: ${events.length}件`);
     
     // ★印がついていて、マーケティング部のメンバーが参加しているイベントをフィルタリング
-    const targetEvents = filterMarketingEvents(events, config.MARKETING_TEAM);
+    const targetEvents = filterMarketingEvents(events, config);
     Logger.log(`対象イベント数: ${targetEvents.length}件`);
     
     if (targetEvents.length > 0) {
@@ -914,6 +1650,12 @@ function testDateRange() {
       const allMeetingData = [];
       for (const event of targetEvents) {
         const meetingData = extractMeetingData(event);
+        if (!meetingData || shouldSkipMeeting(meetingData, config)) {
+          if (meetingData) {
+            Logger.log(`担当者除外設定のためスキップ: ${meetingData.clientName} - ${meetingData.date} 担当者: ${meetingData.responsiblePersonEmail}`);
+          }
+          continue;
+        }
         allMeetingData.push(meetingData);
         Logger.log(`抽出したイベント: ${meetingData.clientName} - ${meetingData.date} ${meetingData.startTime} - 担当者: ${meetingData.responsiblePerson}`);
       }
@@ -959,7 +1701,7 @@ function testSingleEvent() {
     Logger.log(`取得したイベント数: ${events.length}件`);
     
     // ★印がついていて、マーケティング部のメンバーが参加しているイベントをフィルタリング
-    const targetEvents = filterMarketingEvents(events, config.MARKETING_TEAM);
+    const targetEvents = filterMarketingEvents(events, config);
     Logger.log(`対象イベント数: ${targetEvents.length}件`);
     
     if (targetEvents.length > 0) {
@@ -972,6 +1714,12 @@ function testSingleEvent() {
       const allMeetingData = [];
       for (const event of targetEvents) {
         const meetingData = extractMeetingData(event);
+        if (!meetingData || shouldSkipMeeting(meetingData, config)) {
+          if (meetingData) {
+            Logger.log(`担当者除外設定のためスキップ: ${meetingData.clientName} - ${meetingData.date} 担当者: ${meetingData.responsiblePersonEmail}`);
+          }
+          continue;
+        }
         allMeetingData.push(meetingData);
         Logger.log(`抽出したイベント: ${meetingData.clientName} - ${meetingData.date} ${meetingData.startTime}`);
       }
