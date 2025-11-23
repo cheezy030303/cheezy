@@ -1,0 +1,282 @@
+/**
+ * 週次の進捗表を各担当シートに追加し、Chatworkへリマインドを送信するスクリプト
+ */
+
+const SHEET_SETTINGS = [
+  { name: '中村さん', startRow: 1, startCol: 3, numRows: 17, numCols: 10 },
+  { name: '倉持さん', startRow: 1, startCol: 3, numRows: 18, numCols: 10 },
+  { name: '萩尾さん', startRow: 1, startCol: 3, numRows: 17, numCols: 10 },
+];
+
+const HEADER_CONFIG = [
+  { colOffset: 0, value: '現状CPA' }, // C列
+  { colOffset: 2, value: '日予算N（残り日数でのデイリー）' }, // E列
+  { colOffset: 3, value: '着地想定配信金額' }, // F列
+  { colOffset: 4, value: '達成状況' }, // G列
+  { colOffset: 5, value: '課題' }, // H列
+];
+
+function runWeeklyProgressUpdate() {
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const timezone = Session.getScriptTimeZone();
+  let reminderDateString = '';
+
+  SHEET_SETTINGS.forEach(config => {
+    const result = insertNewProgressTable(spreadsheet, config, timezone);
+    if (!reminderDateString && result) {
+      reminderDateString = result;
+    }
+  });
+
+  if (reminderDateString) {
+    sendChatworkReminder(reminderDateString);
+  }
+}
+
+function insertNewProgressTable(spreadsheet, config, timezone) {
+  const sheet = spreadsheet.getSheetByName(config.name);
+  if (!sheet) {
+    Logger.log(`警告: シート「${config.name}」が見つかりません`);
+    return '';
+  }
+
+  const previousDateCell = sheet.getRange(config.startRow + 2, config.startCol);
+  const previousDateValue = previousDateCell.getValue();
+  const newDate = getNextFridayFromPrevious(previousDateValue);
+  const newDateString = Utilities.formatDate(newDate, timezone, 'yyyy/MM/dd');
+
+  sheet.insertColumns(config.startCol, config.numCols);
+
+  const previousRange = sheet.getRange(
+    config.startRow,
+    config.startCol + config.numCols,
+    config.numRows,
+    config.numCols
+  );
+  const newRange = sheet.getRange(
+    config.startRow,
+    config.startCol,
+    config.numRows,
+    config.numCols
+  );
+
+  previousRange.copyTo(newRange, { contentsOnly: false });
+
+  const eColumnOffset = 2; // C列起点でE列は+2
+  const eValues = newRange.getValues().map(row => [row[eColumnOffset]]);
+
+  newRange.clearContent();
+  sheet
+    .getRange(config.startRow, config.startCol + eColumnOffset, config.numRows, 1)
+    .setValues(eValues);
+
+  applyHeaderFormatting(sheet, config);
+
+  insertFormulas(sheet, config);
+
+  insertGoalText(sheet, config);
+
+  previousDateCell.setValue(newDate);
+
+  return newDateString;
+}
+
+function getNextFridayFromPrevious(value) {
+  const parsed = parseDateValue(value);
+  if (parsed) {
+    parsed.setDate(parsed.getDate() + 7);
+    return parsed;
+  }
+  return getNextFriday(new Date());
+}
+
+function parseDateValue(value) {
+  if (value instanceof Date) {
+    return new Date(value);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = new Date(value);
+    if (!isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+function getNextFriday(date) {
+  const result = new Date(date);
+  const day = result.getDay();
+  const diff = (5 - day + 7) % 7 || 7;
+  result.setDate(result.getDate() + diff);
+  return result;
+}
+
+function sendChatworkReminder(dateString) {
+  const props = PropertiesService.getScriptProperties();
+  const apiToken = props.getProperty('CHATWORK_API_TOKEN');
+  const roomIdsValue = props.getProperty('CHATWORK_ROOM_IDS');
+
+  if (!apiToken || !roomIdsValue) {
+    Logger.log('Chatwork設定が見つかりません（CHATWORK_API_TOKEN / CHATWORK_ROOM_IDS）。');
+    return;
+  }
+
+  const message = createReminderMessage(dateString);
+  const roomIds = roomIdsValue.split(',').map(id => id.trim()).filter(Boolean);
+
+  roomIds.forEach(roomId => postChatworkMessage(apiToken, roomId, message));
+}
+
+function createReminderMessage(dateString) {
+  return `[To:5672510]中村 等志さん
+[To:4007358]萩尾 智哉さん
+[To:2374812]倉持 佑吏（毎週水曜日在宅ワーク中）さん
+【週次レポート記入リマインド】
+
+${dateString}（金曜日）の週次レポートを追加しました。
+こちらのシートを月曜日午前中ごろまでにご記載いただければと思います！
+https://docs.google.com/spreadsheets/d/18MVtslg1tB3WkHuJKts_L0kO8CfabOTF1fw13Pt63gE/edit?gid=823357711#gid=823357711
+
+以下のシートに記入をお願いします：
+・中村さん
+・倉持さん
+・萩尾さん
+
+よろしくお願いいたします。`;
+}
+
+function postChatworkMessage(apiToken, roomId, message) {
+  const url = `https://api.chatwork.com/v2/rooms/${roomId}/messages`;
+  const options = {
+    method: 'post',
+    headers: { 'X-ChatWorkToken': apiToken },
+    payload: { body: message },
+    muteHttpExceptions: true,
+  };
+
+  try {
+    const response = UrlFetchApp.fetch(url, options);
+    const code = response.getResponseCode();
+    if (code !== 200) {
+      Logger.log(`Chatwork送信失敗 (room: ${roomId}, status: ${code})`);
+    }
+  } catch (error) {
+    Logger.log(`Chatwork送信エラー (room: ${roomId}) ${error}`);
+  }
+}
+
+function setupWeeklyTrigger() {
+  const handler = 'runWeeklyProgressUpdate';
+  ScriptApp.getProjectTriggers()
+    .filter(trigger => trigger.getHandlerFunction() === handler)
+    .forEach(trigger => ScriptApp.deleteTrigger(trigger));
+
+  ScriptApp.newTrigger(handler)
+    .timeBased()
+    .everyWeeks(1)
+    .onWeekDay(ScriptApp.WeekDay.FRIDAY)
+    .atHour(12) // 12:00
+    .create();
+}
+
+function applyHeaderFormatting(sheet, config) {
+  sheet
+    .getRange(config.startRow + 3, config.startCol, 1, config.numCols)
+    .setBackground('#808080');
+
+  HEADER_CONFIG.forEach(({ colOffset, value }) => {
+    sheet.getRange(config.startRow + 3, config.startCol + colOffset).setValue(value);
+  });
+
+  const projectStatusRange = sheet.getRange(config.startRow + 3, config.startCol + 6, 1, 3); // columns I-K within range
+  projectStatusRange.merge();
+  projectStatusRange.setValue('案件状況');
+  projectStatusRange.setFontColor('#FFFFFF');
+  projectStatusRange.setHorizontalAlignment('center');
+  projectStatusRange.setBackground('#808080');
+}
+
+function insertFormulas(sheet, config) {
+  const sheetName = config.name;
+  const baseRow = config.startRow;
+  const baseCol = config.startCol;
+  
+  // E列は baseCol + 2, F列は baseCol + 3, G列は baseCol + 4
+  const eCol = baseCol + 2;
+  const fCol = baseCol + 3;
+  const gCol = baseCol + 4;
+  
+  // データ行は baseRow + 4 (5行目) から baseRow + 7 (8行目) まで
+  const dataStartRow = baseRow + 4; // 5行目
+  const dataEndRow = baseRow + 7;   // 8行目
+  
+  if (sheetName === '中村さん' || sheetName === '萩尾さん') {
+    // 合計行は9行目 (baseRow + 8)
+    const sumRow = baseRow + 8;
+    
+    // E9に=SUM(E5:E8)
+    sheet.getRange(sumRow, eCol).setFormula(`=SUM(${getA1Notation(dataStartRow, eCol)}:${getA1Notation(dataEndRow, eCol)})`);
+    
+    // F9に=SUM(F5:F8)
+    sheet.getRange(sumRow, fCol).setFormula(`=SUM(${getA1Notation(dataStartRow, fCol)}:${getA1Notation(dataEndRow, fCol)})`);
+    
+    // G5に=F5/E5, G6に=F6/E6, G7に=F7/E7, G8に=F8/E8
+    for (let row = dataStartRow; row <= dataEndRow; row++) {
+      sheet.getRange(row, gCol).setFormula(`=${getA1Notation(row, fCol)}/${getA1Notation(row, eCol)}`);
+    }
+    
+    // G9に=F9/E9
+    sheet.getRange(sumRow, gCol).setFormula(`=${getA1Notation(sumRow, fCol)}/${getA1Notation(sumRow, eCol)}`);
+    
+  } else if (sheetName === '倉持さん') {
+    // 合計行は10行目 (baseRow + 9)
+    const sumRow = baseRow + 9;
+    
+    // E10に=SUM(E5:E8)
+    sheet.getRange(sumRow, eCol).setFormula(`=SUM(${getA1Notation(dataStartRow, eCol)}:${getA1Notation(dataEndRow, eCol)})`);
+    
+    // F10に=SUM(F5:F8)
+    sheet.getRange(sumRow, fCol).setFormula(`=SUM(${getA1Notation(dataStartRow, fCol)}:${getA1Notation(dataEndRow, fCol)})`);
+    
+    // G5に=F5/E5, G6に=F6/E6, G7に=F7/E7, G8に=F8/E8
+    for (let row = dataStartRow; row <= dataEndRow; row++) {
+      sheet.getRange(row, gCol).setFormula(`=${getA1Notation(row, fCol)}/${getA1Notation(row, eCol)}`);
+    }
+    
+    // G9に=F9/E9 (9行目は baseRow + 8)
+    const row9 = baseRow + 8;
+    sheet.getRange(row9, gCol).setFormula(`=${getA1Notation(row9, fCol)}/${getA1Notation(row9, eCol)}`);
+    
+    // G10に=F10/E10
+    sheet.getRange(sumRow, gCol).setFormula(`=${getA1Notation(sumRow, fCol)}/${getA1Notation(sumRow, eCol)}`);
+  }
+}
+
+function getA1Notation(row, col) {
+  let colLetter = '';
+  let tempCol = col;
+  while (tempCol > 0) {
+    const remainder = (tempCol - 1) % 26;
+    colLetter = String.fromCharCode(65 + remainder) + colLetter;
+    tempCol = Math.floor((tempCol - 1) / 26);
+  }
+  return `${colLetter}${row}`;
+}
+
+function insertGoalText(sheet, config) {
+  const sheetName = config.name;
+  const cCol = config.startCol; // C列は startCol (3列目)
+  let targetRow;
+  
+  if (sheetName === '中村さん' || sheetName === '萩尾さん') {
+    targetRow = 11; // C11
+  } else if (sheetName === '倉持さん') {
+    targetRow = 12; // C12
+  } else {
+    return; // 該当しないシートの場合は何もしない
+  }
+  
+  const goalCell = sheet.getRange(targetRow, cCol);
+  goalCell.setValue('今週のゴール（動き切る予定の施策をご記載ください。）');
+  goalCell.setFontColor('#FFFFFF');
+}
