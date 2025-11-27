@@ -37,6 +37,7 @@ function getConfig() {
       'taishisuzuki@mirai-kirei.jp',
       'shibuya-s@mirai-kirei.jp',
       'takahashi-r@mirai-kirei.jp',
+      'ohigashi-s@mirai-kirei.jp',
       'soda-c@mirai-kirei.jp',
       'shimizu-a@mirai-kirei.jp',
       'sugisue-r@mirai-kirei.jp',
@@ -92,7 +93,8 @@ function getConfig() {
       'hirata-y@mirai-kirei.jp',
       'taishisuzuki@mirai-kirei.jp',
       'shibuya-s@mirai-kirei.jp',
-      'takahashi-r@mirai-kirei.jp'
+      'takahashi-r@mirai-kirei.jp',
+      'ohigashi-s@mirai-kirei.jp'
     ],
     
     // パートメンバーのメールアドレスリスト
@@ -146,6 +148,7 @@ function getConfig() {
       'arayashiki-r@mirai-kirei.jp': '荒屋敷陸斗',
       'taishisuzuki@mirai-kirei.jp': '鈴木太志',
       'takahashi-r@mirai-kirei.jp': '髙橋諒太',
+      'ohigashi-s@mirai-kirei.jp': '大東栞',
       'soda-c@mirai-kirei.jp': '宗田ちづる',
       'shimizu-a@mirai-kirei.jp': '清水あす香',
       'sugisue-r@mirai-kirei.jp': '杉末莉沙',
@@ -224,10 +227,9 @@ function getConfig() {
       LOCAL_SHEET_NAME: 'MK登録済み一覧',
       // 外部スプレッドシートを参照する場合のシート名
       SHEET_NAME: 'MK議事録',
-      // ヘッダー名（手動登録シート側）の指定
-      DATE_COLUMN: '日付',
-      START_TIME_COLUMN: '開始時刻',
-      EMAIL_COLUMN: '担当者メールアドレス',
+      // ヘッダー名（MK登録済み一覧シート側）の指定
+      DATE_COLUMN: '実施日',        // MK登録済み一覧シートのC列
+      EMPLOYEE_NAME_COLUMN: '従業員名',  // MK登録済み一覧シートのN列
       // ステータス欄に表示する値（例: 済）
       STATUS_VALUE: '済'
     },
