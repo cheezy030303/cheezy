@@ -892,6 +892,10 @@ function getPendingMeetings(sheet, config) {
   const timezone = config.TIMEZONE || Session.getScriptTimeZone();
   const pending = [];
   
+  // 2025/11/26以降の日付フィルタ用の基準日
+  const filterDate = new Date(2025, 10, 26); // 2025年11月26日（月は0から始まる）
+  filterDate.setHours(0, 0, 0, 0);
+  
   dataRange.forEach(row => {
     const statusValue = row[indexes.status];
     if (statusValue && statusValue.toString().trim() !== '') {
@@ -906,6 +910,19 @@ function getPendingMeetings(sheet, config) {
     const responsibleEmail = row[indexes.email] ? row[indexes.email].toString().trim() : '';
     
     if (!dateValue || !startValue) {
+      return;
+    }
+    
+    // 日付フィルタリング：2025/11/26以降のデータのみ対象
+    try {
+      const meetingDate = new Date(dateValue);
+      meetingDate.setHours(0, 0, 0, 0);
+      
+      if (meetingDate < filterDate) {
+        return; // 2025/11/26より前の日付はスキップ
+      }
+    } catch (error) {
+      Logger.log(`日付解析エラー（スキップします）: ${dateValue} - ${error.toString()}`);
       return;
     }
     
@@ -929,18 +946,94 @@ function getPendingMeetings(sheet, config) {
  * @return {String} メッセージ本文
  */
 function buildChatworkMessage(meetings, config) {
+  // MK登録済み一覧シートから顧客名を取得するマップを作成
+  const clientNameMap = getClientNameMap(config);
+  
   const details = meetings.map(meeting => {
-    const client = meeting.clientName || 'クライアント未設定';
-    const end = meeting.endTime ? `～${meeting.endTime}` : '';
     const responsible = meeting.responsibleName || '担当者未設定';
-    const email = meeting.responsibleEmail || '-';
-    return `・${meeting.date} ${meeting.startTime}${end} ${client}（担当: ${responsible} / ${email}）`;
-  }).join('\n');
+    const clientOriginal = meeting.clientName || 'クライアント未設定';
+    
+    // MK登録済み一覧シートのO列から正式な顧客名を取得
+    const clientFormal = clientNameMap[clientOriginal] || clientOriginal;
+    
+    // 日付フォーマットを変更（11/26(水)形式）
+    const dateFormatted = formatDateForChatwork(meeting.date);
+    
+    return `${responsible}さん\n\n${dateFormatted}　${meeting.startTime}～　　${clientFormal} 様`;
+  }).join('\n\n');
   
   const template = (config.CHATWORK && config.CHATWORK.REMINDER_TEMPLATE) ||
-    '[info][title]MKシステム未登録の議事録[/title]%DETAILS%[/info]';
+    'お疲れ様です。\n\n議事録のアップが確認できておりません。\n\nまた、対応完了しているのに、こちらのチャットで連絡が入っている場合は、\n\n見落としの可能性もありますので、恐れ入りますが、ご連絡いただけますと幸いです。\n\n※議事録不要の場合にも、お手数ですがその旨お伝えください。\n\n----------------------------------------------------------------------------\n\n%DETAILS%\n\n------------------------------------------------------------------';
   
-  return template.replace('%DETAILS%', `\n${details}\n`);
+  return template.replace('%DETAILS%', details);
+}
+
+/**
+ * MK登録済み一覧シートから顧客名マップを取得
+ * @param {Object} config - 設定オブジェクト
+ * @return {Object} 元の顧客名→正式顧客名のマップ
+ */
+function getClientNameMap(config) {
+  try {
+    const spreadsheet = SpreadsheetApp.openById(config.SPREADSHEET_ID);
+    const mkSheet = spreadsheet.getSheetByName(config.MK_REGISTRATION_SHEET.LOCAL_SHEET_NAME);
+    
+    if (!mkSheet) {
+      Logger.log('MK登録済み一覧シートが見つかりません');
+      return {};
+    }
+    
+    const lastRow = mkSheet.getLastRow();
+    if (lastRow <= 1) {
+      return {};
+    }
+    
+    const headers = mkSheet.getRange(1, 1, 1, mkSheet.getLastColumn()).getValues()[0];
+    const clientColumnIndex = headers.indexOf('顧客参加者'); // B列
+    const formalClientColumnIndex = 14; // O列（0ベースで14）
+    
+    if (clientColumnIndex === -1) {
+      Logger.log('顧客参加者列が見つかりません');
+      return {};
+    }
+    
+    const dataRange = mkSheet.getRange(2, 1, lastRow - 1, mkSheet.getLastColumn()).getValues();
+    const clientMap = {};
+    
+    dataRange.forEach(row => {
+      const originalClient = row[clientColumnIndex] ? row[clientColumnIndex].toString().trim() : '';
+      const formalClient = row[formalClientColumnIndex] ? row[formalClientColumnIndex].toString().trim() : '';
+      
+      if (originalClient && formalClient) {
+        clientMap[originalClient] = formalClient;
+      }
+    });
+    
+    return clientMap;
+  } catch (error) {
+    Logger.log(`顧客名マップ取得エラー: ${error.toString()}`);
+    return {};
+  }
+}
+
+/**
+ * 日付をチャットワーク用フォーマットに変換
+ * @param {String} dateStr - 日付文字列（YYYY/MM/DD形式）
+ * @return {String} フォーマット済み日付（MM/DD(曜日)形式）
+ */
+function formatDateForChatwork(dateStr) {
+  try {
+    const date = new Date(dateStr);
+    const month = date.getMonth() + 1;
+    const day = date.getDate();
+    const weekdays = ['日', '月', '火', '水', '木', '金', '土'];
+    const weekday = weekdays[date.getDay()];
+    
+    return `${month}/${day}(${weekday})`;
+  } catch (error) {
+    Logger.log(`日付フォーマットエラー: ${error.toString()}`);
+    return dateStr;
+  }
 }
 
 /**
