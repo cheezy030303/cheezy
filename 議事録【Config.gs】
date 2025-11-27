@@ -261,7 +261,7 @@ function getConfig() {
     CHATWORK: {
       ENABLED: true, // trueにするとリマインド送信を有効化
       // API_TOKEN と ROOM_ID はスクリプトプロパティから取得
-      REMINDER_TEMPLATE: "[info][title]MKシステム未登録の議事録[/title]%DETAILS%[/info]"
+      REMINDER_TEMPLATE: "お疲れ様です。\n\n議事録のアップが確認できておりません。\n\nまた、対応完了しているのに、こちらのチャットで連絡が入っている場合は、\n\n見落としの可能性もありますので、恐れ入りますが、ご連絡いただけますと幸いです。\n\n※議事録不要の場合にも、お手数ですがその旨お伝えください。\n\n----------------------------------------------------------------------------\n\n%DETAILS%\n\n------------------------------------------------------------------"
     },
     
     // ============================================
@@ -319,3 +319,4 @@ function getChatworkConfig() {
     REMINDER_TEMPLATE: config.CHATWORK.REMINDER_TEMPLATE
   };
 }
+
