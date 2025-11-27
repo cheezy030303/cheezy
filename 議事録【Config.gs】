@@ -37,6 +37,9 @@ function getConfig() {
     // メールアドレスから担当者名へのマッピング（メールアドレスシートから動的生成）
     EMAIL_TO_NAME: employeeData.EMAIL_TO_NAME,
     
+    // メールアドレスからチャットワークIDへのマッピング（A、D、H列から取得）
+    EMAIL_TO_CHATWORK_ID: employeeData.EMAIL_TO_CHATWORK_ID,
+    
     // 担当者から除外したいメールアドレス（例: 代理カレンダー）
     EXCLUDED_RESPONSIBLE_EMAILS: [
       'ibi-h@mirai-kirei.jp'
@@ -195,33 +198,46 @@ function getEmployeeDataFromSheet(spreadsheetId) {
     const otherEmployees = [];
     const partTimers = [];
     const emailToName = {};
+    const emailToChatworkId = {};
     const allCalendarIds = [];
     
     dataRange.forEach(row => {
-      // BC列: マーケティング部社員
+      // A列: マーケティング部のチャットワークID, BC列: マーケティング部社員
+      const marketingChatworkId = row[0] ? row[0].toString().trim() : '';
       const marketingName = row[1] ? row[1].toString().trim() : '';
       const marketingEmail = row[2] ? row[2].toString().trim() : '';
       if (marketingName && marketingEmail) {
         marketingTeam.push(marketingEmail);
         emailToName[marketingEmail] = marketingName;
+        if (marketingChatworkId) {
+          emailToChatworkId[marketingEmail] = marketingChatworkId;
+        }
         allCalendarIds.push(marketingEmail);
       }
       
-      // EF列: マーケティング部以外の社員
+      // D列: その他社員のチャットワークID, EF列: マーケティング部以外の社員
+      const otherChatworkId = row[3] ? row[3].toString().trim() : '';
       const otherName = row[4] ? row[4].toString().trim() : '';
       const otherEmail = row[5] ? row[5].toString().trim() : '';
       if (otherName && otherEmail) {
         otherEmployees.push(otherEmail);
         emailToName[otherEmail] = otherName;
+        if (otherChatworkId) {
+          emailToChatworkId[otherEmail] = otherChatworkId;
+        }
         allCalendarIds.push(otherEmail);
       }
       
-      // IJ列: パート
+      // H列: パートのチャットワークID, IJ列: パート
+      const partChatworkId = row[7] ? row[7].toString().trim() : '';
       const partName = row[8] ? row[8].toString().trim() : '';
       const partEmail = row[9] ? row[9].toString().trim() : '';
       if (partName && partEmail) {
         partTimers.push(partEmail);
         emailToName[partEmail] = partName;
+        if (partChatworkId) {
+          emailToChatworkId[partEmail] = partChatworkId;
+        }
         allCalendarIds.push(partEmail);
       }
     });
@@ -233,6 +249,7 @@ function getEmployeeDataFromSheet(spreadsheetId) {
       MARKETING_TEAM: marketingTeam,
       PART_TIMER_TEAM: partTimers,
       EMAIL_TO_NAME: emailToName,
+      EMAIL_TO_CHATWORK_ID: emailToChatworkId,
       OTHER_EMPLOYEES: otherEmployees
     };
     
@@ -253,6 +270,7 @@ function getDefaultEmployeeData() {
     MARKETING_TEAM: [],
     PART_TIMER_TEAM: [],
     EMAIL_TO_NAME: {},
+    EMAIL_TO_CHATWORK_ID: {},
     OTHER_EMPLOYEES: []
   };
 }
