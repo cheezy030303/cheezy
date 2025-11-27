@@ -259,9 +259,8 @@ function getConfig() {
     
     // チャットワーク連携設定
     CHATWORK: {
-      ENABLED: false, // trueにするとリマインド送信を有効化
-      API_TOKEN: "your-chatwork-api-token",
-      ROOM_ID: "138351493",
+      ENABLED: true, // trueにするとリマインド送信を有効化
+      // API_TOKEN と ROOM_ID はスクリプトプロパティから取得
       REMINDER_TEMPLATE: "[info][title]MKシステム未登録の議事録[/title]%DETAILS%[/info]"
     },
     
@@ -302,5 +301,21 @@ function getSecureConfig() {
  * 2. 以下のプロパティを追加：
  *    - MK_API_ENDPOINT: MKシステムのAPIエンドポイント
  *    - MK_API_KEY: MKシステムのAPIキー
+ *    - CHATWORK_API_TOKEN: チャットワークのAPIトークン
+ *    - CHATWORK_ROOM_ID: チャットワークのルームID（例: 138351493）
  */
 
+/**
+ * チャットワーク設定をスクリプトプロパティから取得
+ */
+function getChatworkConfig() {
+  const properties = PropertiesService.getScriptProperties();
+  const config = getConfig();
+  
+  return {
+    ENABLED: config.CHATWORK.ENABLED,
+    API_TOKEN: properties.getProperty('CHATWORK_API_TOKEN'),
+    ROOM_ID: properties.getProperty('CHATWORK_ROOM_ID'),
+    REMINDER_TEMPLATE: config.CHATWORK.REMINDER_TEMPLATE
+  };
+}
