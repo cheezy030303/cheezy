@@ -1055,13 +1055,13 @@ function updateRegistrationStatusColumn(sheet, registeredMeetings, config) {
   
   const headerRow = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   const dateIndex = headerRow.indexOf('日付');                    // 議事録シートのA列
-  const responsibleIndex = headerRow.indexOf('担当者');           // 議事録シートのE列
+  const participantIndex = headerRow.indexOf('参加者');           // 議事録シートのG列
   const statusHeader = config.REGISTRATION_STATUS_HEADER || 'MK登録状況';
   const statusIndex = headerRow.indexOf(statusHeader);           // 議事録シートのI列
   
-  if (dateIndex === -1 || responsibleIndex === -1 || statusIndex === -1) {
+  if (dateIndex === -1 || participantIndex === -1 || statusIndex === -1) {
     Logger.log('ステータス更新に必要な列が見つからないため、更新をスキップします');
-    Logger.log(`必要な列: 日付(${dateIndex}), 担当者(${responsibleIndex}), ${statusHeader}(${statusIndex})`);
+    Logger.log(`必要な列: 日付(${dateIndex}), 参加者(${participantIndex}), ${statusHeader}(${statusIndex})`);
     return;
   }
   
@@ -1069,16 +1069,30 @@ function updateRegistrationStatusColumn(sheet, registeredMeetings, config) {
   const statusRange = sheet.getRange(2, statusIndex + 1, lastRow - 1, 1);
   const statusValues = statusRange.getValues();
   const dateRange = sheet.getRange(2, dateIndex + 1, lastRow - 1, 1).getValues();
-  const responsibleRange = sheet.getRange(2, responsibleIndex + 1, lastRow - 1, 1).getValues();
+  const participantRange = sheet.getRange(2, participantIndex + 1, lastRow - 1, 1).getValues();
   const statusValueText = (config.MK_REGISTRATION_SHEET && config.MK_REGISTRATION_SHEET.STATUS_VALUE) || '済';
   
   for (let i = 0; i < statusValues.length; i++) {
     const dateValue = normalizeDateValue(dateRange[i][0], timezone);
-    const responsibleName = normalizeEmployeeName(responsibleRange[i][0]);
+    const participantList = participantRange[i][0] ? participantRange[i][0].toString() : '';
     
-    if (dateValue && responsibleName) {
-      const key = buildMeetingKeyByDateAndEmployee(dateValue, responsibleName);
-      statusValues[i][0] = registeredMeetings.has(key) ? statusValueText : '';
+    if (dateValue && participantList) {
+      // 参加者リストから個別の名前を抽出
+      const participants = participantList.split(',').map(name => normalizeEmployeeName(name));
+      
+      // 各参加者について登録済みかチェック
+      let isRegistered = false;
+      for (const participant of participants) {
+        if (participant) {
+          const key = buildMeetingKeyByDateAndEmployee(dateValue, participant);
+          if (registeredMeetings.has(key)) {
+            isRegistered = true;
+            break;
+          }
+        }
+      }
+      
+      statusValues[i][0] = isRegistered ? statusValueText : '';
     } else {
       statusValues[i][0] = '';
     }
