@@ -946,15 +946,16 @@ function getPendingMeetings(sheet, config) {
  * @return {String} メッセージ本文
  */
 function buildChatworkMessage(meetings, config) {
-  // MK登録済み一覧シートから顧客名を取得するマップを作成
-  const clientNameMap = getClientNameMap(config);
+  // MK登録済み一覧シートから正式な顧客名一覧を取得
+  const clientData = getClientNameMap(config);
+  const formalNames = clientData.formalNames || [];
   
   const details = meetings.map(meeting => {
     const responsible = meeting.responsibleName || '担当者未設定';
     const clientOriginal = meeting.clientName || 'クライアント未設定';
     
-    // MK登録済み一覧シートのO列から正式な顧客名を取得
-    const clientFormal = clientNameMap[clientOriginal] || clientOriginal;
+    // 類似度マッチングで正式な顧客名を検索
+    const clientFormal = findSimilarClientName(clientOriginal, formalNames);
     
     // 日付フォーマットを変更（11/26(水)形式）
     const dateFormatted = formatDateForChatwork(meeting.date);
@@ -969,7 +970,7 @@ function buildChatworkMessage(meetings, config) {
 }
 
 /**
- * MK登録済み一覧シートから顧客名マップを取得
+ * MK登録済み一覧シートから顧客名マップを取得（類似度マッチング対応）
  * @param {Object} config - 設定オブジェクト
  * @return {Object} 元の顧客名→正式顧客名のマップ
  */
@@ -988,32 +989,163 @@ function getClientNameMap(config) {
       return {};
     }
     
-    const headers = mkSheet.getRange(1, 1, 1, mkSheet.getLastColumn()).getValues()[0];
-    const clientColumnIndex = headers.indexOf('顧客参加者'); // B列
     const formalClientColumnIndex = 14; // O列（0ベースで14）
-    
-    if (clientColumnIndex === -1) {
-      Logger.log('顧客参加者列が見つかりません');
-      return {};
-    }
-    
     const dataRange = mkSheet.getRange(2, 1, lastRow - 1, mkSheet.getLastColumn()).getValues();
-    const clientMap = {};
     
+    // O列から正式な顧客名一覧を取得
+    const formalClientNames = [];
     dataRange.forEach(row => {
-      const originalClient = row[clientColumnIndex] ? row[clientColumnIndex].toString().trim() : '';
       const formalClient = row[formalClientColumnIndex] ? row[formalClientColumnIndex].toString().trim() : '';
-      
-      if (originalClient && formalClient) {
-        clientMap[originalClient] = formalClient;
+      if (formalClient && !formalClientNames.includes(formalClient)) {
+        formalClientNames.push(formalClient);
       }
     });
     
-    return clientMap;
+    return { formalNames: formalClientNames };
   } catch (error) {
     Logger.log(`顧客名マップ取得エラー: ${error.toString()}`);
-    return {};
+    return { formalNames: [] };
   }
+}
+
+/**
+ * 手書きクライアント名に最も類似する正式名称を検索
+ * @param {String} handwrittenName - 手書きのクライアント名
+ * @param {Array} formalNames - 正式名称の配列
+ * @return {String} 最も類似する正式名称（見つからない場合は元の名前）
+ */
+function findSimilarClientName(handwrittenName, formalNames) {
+  if (!handwrittenName || !formalNames || formalNames.length === 0) {
+    return handwrittenName;
+  }
+  
+  // 完全一致チェック
+  const exactMatch = formalNames.find(name => name === handwrittenName);
+  if (exactMatch) {
+    return exactMatch;
+  }
+  
+  // 部分一致チェック（手書き名が正式名称に含まれる）
+  const partialMatch = formalNames.find(name => name.includes(handwrittenName));
+  if (partialMatch) {
+    Logger.log(`部分一致発見: "${handwrittenName}" → "${partialMatch}"`);
+    return partialMatch;
+  }
+  
+  // 逆部分一致チェック（正式名称が手書き名に含まれる）
+  const reverseMatch = formalNames.find(name => handwrittenName.includes(name));
+  if (reverseMatch) {
+    Logger.log(`逆部分一致発見: "${handwrittenName}" → "${reverseMatch}"`);
+    return reverseMatch;
+  }
+  
+  // 会社名キーワードマッチング
+  const companyKeywords = extractCompanyKeywords(handwrittenName);
+  if (companyKeywords.length > 0) {
+    for (const keyword of companyKeywords) {
+      const keywordMatch = formalNames.find(name => name.includes(keyword));
+      if (keywordMatch) {
+        Logger.log(`キーワード一致発見: "${handwrittenName}" (${keyword}) → "${keywordMatch}"`);
+        return keywordMatch;
+      }
+    }
+  }
+  
+  // 類似度スコア計算（レーベンシュタイン距離ベース）
+  let bestMatch = handwrittenName;
+  let bestScore = 0;
+  const threshold = 0.6; // 類似度の閾値
+  
+  formalNames.forEach(formalName => {
+    const similarity = calculateSimilarity(handwrittenName, formalName);
+    if (similarity > bestScore && similarity >= threshold) {
+      bestScore = similarity;
+      bestMatch = formalName;
+    }
+  });
+  
+  if (bestMatch !== handwrittenName) {
+    Logger.log(`類似度マッチング発見: "${handwrittenName}" → "${bestMatch}" (類似度: ${bestScore.toFixed(2)})`);
+  }
+  
+  return bestMatch;
+}
+
+/**
+ * 会社名からキーワードを抽出
+ * @param {String} companyName - 会社名
+ * @return {Array} キーワード配列
+ */
+function extractCompanyKeywords(companyName) {
+  const keywords = [];
+  
+  // 「株式会社」「有限会社」「合同会社」などを除去
+  let cleanName = companyName
+    .replace(/株式会社|有限会社|合同会社|合資会社|一般社団法人|公益社団法人|一般財団法人|公益財団法人/g, '')
+    .replace(/\s+/g, '') // 空白除去
+    .trim();
+  
+  // カタカナ・ひらがな・漢字・英数字の連続部分を抽出
+  const matches = cleanName.match(/[ァ-ヶー]+|[あ-ん]+|[一-龯]+|[A-Za-z0-9]+/g);
+  if (matches) {
+    matches.forEach(match => {
+      if (match.length >= 2) { // 2文字以上のキーワードのみ
+        keywords.push(match);
+      }
+    });
+  }
+  
+  return keywords;
+}
+
+/**
+ * 文字列の類似度を計算（0-1の範囲）
+ * @param {String} str1 - 文字列1
+ * @param {String} str2 - 文字列2
+ * @return {Number} 類似度（0-1）
+ */
+function calculateSimilarity(str1, str2) {
+  if (str1 === str2) return 1;
+  if (!str1 || !str2) return 0;
+  
+  const maxLength = Math.max(str1.length, str2.length);
+  const distance = levenshteinDistance(str1, str2);
+  
+  return (maxLength - distance) / maxLength;
+}
+
+/**
+ * レーベンシュタイン距離を計算
+ * @param {String} str1 - 文字列1
+ * @param {String} str2 - 文字列2
+ * @return {Number} 編集距離
+ */
+function levenshteinDistance(str1, str2) {
+  const matrix = [];
+  
+  for (let i = 0; i <= str2.length; i++) {
+    matrix[i] = [i];
+  }
+  
+  for (let j = 0; j <= str1.length; j++) {
+    matrix[0][j] = j;
+  }
+  
+  for (let i = 1; i <= str2.length; i++) {
+    for (let j = 1; j <= str1.length; j++) {
+      if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          matrix[i][j - 1] + 1,
+          matrix[i - 1][j] + 1
+        );
+      }
+    }
+  }
+  
+  return matrix[str2.length][str1.length];
 }
 
 /**
