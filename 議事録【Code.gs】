@@ -970,29 +970,30 @@ function buildChatworkMessage(meetings, config) {
 }
 
 /**
- * MK登録済み一覧シートから顧客名マップを取得（類似度マッチング対応）
+ * 顧客一覧_importシートから顧客名マップを取得（類似度マッチング対応）
  * @param {Object} config - 設定オブジェクト
  * @return {Object} 元の顧客名→正式顧客名のマップ
  */
 function getClientNameMap(config) {
   try {
     const spreadsheet = SpreadsheetApp.openById(config.SPREADSHEET_ID);
-    const mkSheet = spreadsheet.getSheetByName(config.MK_REGISTRATION_SHEET.LOCAL_SHEET_NAME);
+    const clientSheet = spreadsheet.getSheetByName('顧客一覧_import');
     
-    if (!mkSheet) {
-      Logger.log('MK登録済み一覧シートが見つかりません');
-      return {};
+    if (!clientSheet) {
+      Logger.log('顧客一覧_importシートが見つかりません');
+      return { formalNames: [] };
     }
     
-    const lastRow = mkSheet.getLastRow();
+    const lastRow = clientSheet.getLastRow();
     if (lastRow <= 1) {
-      return {};
+      Logger.log('顧客一覧_importシートにデータがありません');
+      return { formalNames: [] };
     }
     
-    const formalClientColumnIndex = 14; // O列（0ベースで14）
-    const dataRange = mkSheet.getRange(2, 1, lastRow - 1, mkSheet.getLastColumn()).getValues();
+    const formalClientColumnIndex = 1; // B列（0ベースで1）
+    const dataRange = clientSheet.getRange(2, 1, lastRow - 1, clientSheet.getLastColumn()).getValues();
     
-    // O列から正式な顧客名一覧を取得
+    // B列から正式な顧客名一覧を取得
     const formalClientNames = [];
     dataRange.forEach(row => {
       const formalClient = row[formalClientColumnIndex] ? row[formalClientColumnIndex].toString().trim() : '';
@@ -1001,6 +1002,7 @@ function getClientNameMap(config) {
       }
     });
     
+    Logger.log(`顧客一覧_importシートから${formalClientNames.length}件の顧客名を取得しました`);
     return { formalNames: formalClientNames };
   } catch (error) {
     Logger.log(`顧客名マップ取得エラー: ${error.toString()}`);
