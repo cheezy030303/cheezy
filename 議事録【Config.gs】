@@ -7,172 +7,35 @@
  * アプリケーション全体の設定を返す
  */
 function getConfig() {
+  // スプレッドシートIDを取得
+  const spreadsheetId = '1d_7Tq1m5TLoejzaTAW3woPGv4KSf4_ONIyL3ufFPwhI';
+  
+  // メールアドレスシートから動的に社員データを取得
+  const employeeData = getEmployeeDataFromSheet(spreadsheetId);
+  
   return {
     // ============================================
     // カレンダー設定
     // ============================================
     
-    // 会社の共有カレンダーのID（複数指定可能）
-    // 配列で複数のカレンダーを指定できます
-    // 空の場合はデフォルトカレンダーを使用
-    CALENDAR_ID: [
-      'mtanaka@mirai-kirei.jp',
-      'nakamura-h@mirai-kirei.jp',
-      'kawamoto-y@mirai-kirei.jp',
-      'okumura-h@mirai-kirei.jp',
-      'majima-t@mirai-kirei.jp',
-      'takano-r@mirai-kirei.jp',
-      'hashimoto-k@mirai-kirei.jp',
-      'maeno-a@mirai-kirei.jp',
-      'tani-s@mirai-kirei.jp',
-      'yokoyama-s@mirai-kirei.jp',
-      'yoshida-k@mirai-kirei.jp',
-      'yoshida-m@mirai-kirei.jp',
-      'miyazawa-r@mirai-kirei.jp',
-      'arayashiki-r@mirai-kirei.jp',
-      'yyamada@mirai-kirei.jp',
-      'koike-m@mirai-kirei.jp',
-      'ono-h@mirai-kirei.jp',
-      'hirata-y@mirai-kirei.jp',
-      'taishisuzuki@mirai-kirei.jp',
-      'shibuya-s@mirai-kirei.jp',
-      'takahashi-r@mirai-kirei.jp',
-      'ohigashi-s@mirai-kirei.jp',
-      'soda-c@mirai-kirei.jp',
-      'shimizu-a@mirai-kirei.jp',
-      'sugisue-r@mirai-kirei.jp',
-      'koga-s@mirai-kirei.jp',
-      'senami-y@mirai-kirei.jp',
-      'fushimi-m@mirai-kirei.jp',
-      'sato-s@mirai-kirei.jp',
-      'ito-y@mirai-kirei.jp',
-      'shimoji-t@mirai-kirei.jp',
-      'kubota-s@mirai-kirei.jp',
-      'sato-c@mirai-kirei.jp',
-      'sakamoto-m@mirai-kirei.jp',
-      'miyake-m@mirai-kirei.jp',
-      'yamashita-k@mirai-kirei.jp',
-      'yamamoto-y@mirai-kirei.jp',
-      'oooke-y@mirai-kirei.jp',
-      'hasebe-m@mirai-kirei.jp',
-      'uchida-m@mirai-kirei.jp',
-      'kusumi-m@mirai-kirei.jp',
-      'hiratani-r@mirai-kirei.jp',
-      'hirata-k@mirai-kirei.jp',
-      'hayashi-a@mirai-kirei.jp',
-      'suzuki-y@mirai-kirei.jp'
-    ],
+    // 会社の共有カレンダーのID（メールアドレスシートから動的取得）
+    CALENDAR_ID: employeeData.CALENDAR_ID,
     
     // 過去何日分のイベントを取得するか（現在は使用していません。前日のみをチェックします）
     LOOKBACK_DAYS: 7,
     
     // ============================================
-    // マーケティング部メンバー設定
+    // マーケティング部メンバー設定（メールアドレスシートから動的取得）
     // ============================================
     
-    // マーケティング部のメンバーのメールアドレスリスト
-    MARKETING_TEAM: [
-      'mtanaka@mirai-kirei.jp',
-      'nakamura-h@mirai-kirei.jp',
-      'kawamoto-y@mirai-kirei.jp',
-      'okumura-h@mirai-kirei.jp',
-      'majima-t@mirai-kirei.jp',
-      'takano-r@mirai-kirei.jp',
-      'hashimoto-k@mirai-kirei.jp',
-      'maeno-a@mirai-kirei.jp',
-      'tani-s@mirai-kirei.jp',
-      'ibi-h@mirai-kirei.jp',
-      'yokoyama-s@mirai-kirei.jp',
-      'yoshida-k@mirai-kirei.jp',
-      'yoshida-m@mirai-kirei.jp',
-      'miyazawa-r@mirai-kirei.jp',
-      'arayashiki-r@mirai-kirei.jp',
-      'yyamada@mirai-kirei.jp',
-      'koike-m@mirai-kirei.jp',
-      'ono-h@mirai-kirei.jp',
-      'hirata-y@mirai-kirei.jp',
-      'taishisuzuki@mirai-kirei.jp',
-      'shibuya-s@mirai-kirei.jp',
-      'takahashi-r@mirai-kirei.jp',
-      'ohigashi-s@mirai-kirei.jp'
-    ],
+    // マーケティング部のメンバーのメールアドレスリスト（BC列から取得）
+    MARKETING_TEAM: employeeData.MARKETING_TEAM,
     
-    // パートメンバーのメールアドレスリスト
-    PART_TIMER_TEAM: [
-      'soda-c@mirai-kirei.jp',
-      'shimizu-a@mirai-kirei.jp',
-      'sugisue-r@mirai-kirei.jp',
-      'koga-s@mirai-kirei.jp',
-      'senami-y@mirai-kirei.jp',
-      'fushimi-m@mirai-kirei.jp',
-      'sato-s@mirai-kirei.jp',
-      'ito-y@mirai-kirei.jp',
-      'shimoji-t@mirai-kirei.jp',
-      'kubota-s@mirai-kirei.jp',
-      'sato-c@mirai-kirei.jp',
-      'sakamoto-m@mirai-kirei.jp',
-      'miyake-m@mirai-kirei.jp',
-      'yamashita-k@mirai-kirei.jp',
-      'yamamoto-y@mirai-kirei.jp',
-      'oooke-y@mirai-kirei.jp',
-      'hasebe-m@mirai-kirei.jp',
-      'uchida-m@mirai-kirei.jp',
-      'kusumi-m@mirai-kirei.jp',
-      'hiratani-r@mirai-kirei.jp',
-      'hirata-k@mirai-kirei.jp',
-      'hayashi-a@mirai-kirei.jp',
-      'suzuki-y@mirai-kirei.jp'
-    ],
+    // パートメンバーのメールアドレスリスト（IJ列から取得）
+    PART_TIMER_TEAM: employeeData.PART_TIMER_TEAM,
     
-    // メールアドレスから担当者名へのマッピング
-    EMAIL_TO_NAME: {
-      'mtanaka@mirai-kirei.jp': '田中穂',
-      'nakamura-h@mirai-kirei.jp': '中村等志',
-      'kawamoto-y@mirai-kirei.jp': '河本佑太',
-      'okumura-h@mirai-kirei.jp': '奥村隼与',
-      'majima-t@mirai-kirei.jp': '眞島拓海',
-      'takano-r@mirai-kirei.jp': '高野涼士',
-      'hashimoto-k@mirai-kirei.jp': '橋本幹太',
-      'maeno-a@mirai-kirei.jp': '前野綾樹',
-      'tani-s@mirai-kirei.jp': '谷颯真',
-      'ibi-h@mirai-kirei.jp': '井比博',
-      'yoshida-k@mirai-kirei.jp': '吉田紀久子',
-      'yoshida-m@mirai-kirei.jp': '吉田萌',
-      'miyazawa-r@mirai-kirei.jp': '宮沢麗子',
-      'koike-m@mirai-kirei.jp': '小池勝也',
-      'ono-h@mirai-kirei.jp': '小野秀明',
-      'hirata-y@mirai-kirei.jp': '平田佑香',
-      'yyamada@mirai-kirei.jp': '山田善丈',
-      'yokoyama-s@mirai-kirei.jp': '横山颯',
-      'shibuya-s@mirai-kirei.jp': '澁谷悟',
-      'arayashiki-r@mirai-kirei.jp': '荒屋敷陸斗',
-      'taishisuzuki@mirai-kirei.jp': '鈴木太志',
-      'takahashi-r@mirai-kirei.jp': '髙橋諒太',
-      'ohigashi-s@mirai-kirei.jp': '大東栞',
-      'soda-c@mirai-kirei.jp': '宗田ちづる',
-      'shimizu-a@mirai-kirei.jp': '清水あす香',
-      'sugisue-r@mirai-kirei.jp': '杉末莉沙',
-      'koga-s@mirai-kirei.jp': '古賀周子',
-      'senami-y@mirai-kirei.jp': '瀬並裕美子',
-      'fushimi-m@mirai-kirei.jp': '伏見真央',
-      'sato-s@mirai-kirei.jp': '佐藤翔子',
-      'ito-y@mirai-kirei.jp': '伊東由貴子',
-      'shimoji-t@mirai-kirei.jp': '下地つばさ',
-      'kubota-s@mirai-kirei.jp': '久保田沙希',
-      'sato-c@mirai-kirei.jp': '佐藤千恵',
-      'sakamoto-m@mirai-kirei.jp': '坂元萌子',
-      'miyake-m@mirai-kirei.jp': '三宅萌',
-      'yamashita-k@mirai-kirei.jp': '山下和美',
-      'yamamoto-y@mirai-kirei.jp': '山本由夏',
-      'oooke-y@mirai-kirei.jp': '大桶百合子',
-      'hasebe-m@mirai-kirei.jp': '長谷部まりえ',
-      'uchida-m@mirai-kirei.jp': '内田萌恵',
-      'kusumi-m@mirai-kirei.jp': '楠美美有紀',
-      'hiratani-r@mirai-kirei.jp': '平谷里砂',
-      'hirata-k@mirai-kirei.jp': '平田華奈子',
-      'hayashi-a@mirai-kirei.jp': '林梓',
-      'suzuki-y@mirai-kirei.jp': '鈴木由佳理'
-    },
+    // メールアドレスから担当者名へのマッピング（メールアドレスシートから動的生成）
+    EMAIL_TO_NAME: employeeData.EMAIL_TO_NAME,
     
     // 担当者から除外したいメールアドレス（例: 代理カレンダー）
     EXCLUDED_RESPONSIBLE_EMAILS: [
@@ -304,6 +167,95 @@ function getSecureConfig() {
  *    - CHATWORK_API_TOKEN: チャットワークのAPIトークン
  *    - CHATWORK_ROOM_ID: チャットワークのルームID（例: 138351493）
  */
+
+/**
+ * メールアドレスシートから社員データを動的に取得
+ * @param {String} spreadsheetId - スプレッドシートID
+ * @return {Object} 社員データオブジェクト
+ */
+function getEmployeeDataFromSheet(spreadsheetId) {
+  try {
+    const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
+    const emailSheet = spreadsheet.getSheetByName('メールアドレス');
+    
+    if (!emailSheet) {
+      Logger.log('メールアドレスシートが見つかりません');
+      return getDefaultEmployeeData();
+    }
+    
+    const lastRow = emailSheet.getLastRow();
+    if (lastRow <= 1) {
+      Logger.log('メールアドレスシートにデータがありません');
+      return getDefaultEmployeeData();
+    }
+    
+    const dataRange = emailSheet.getRange(2, 1, lastRow - 1, 10).getValues(); // A-J列を取得
+    
+    const marketingTeam = [];
+    const otherEmployees = [];
+    const partTimers = [];
+    const emailToName = {};
+    const allCalendarIds = [];
+    
+    dataRange.forEach(row => {
+      // BC列: マーケティング部社員
+      const marketingName = row[1] ? row[1].toString().trim() : '';
+      const marketingEmail = row[2] ? row[2].toString().trim() : '';
+      if (marketingName && marketingEmail) {
+        marketingTeam.push(marketingEmail);
+        emailToName[marketingEmail] = marketingName;
+        allCalendarIds.push(marketingEmail);
+      }
+      
+      // EF列: マーケティング部以外の社員
+      const otherName = row[4] ? row[4].toString().trim() : '';
+      const otherEmail = row[5] ? row[5].toString().trim() : '';
+      if (otherName && otherEmail) {
+        otherEmployees.push(otherEmail);
+        emailToName[otherEmail] = otherName;
+        allCalendarIds.push(otherEmail);
+      }
+      
+      // IJ列: パート
+      const partName = row[8] ? row[8].toString().trim() : '';
+      const partEmail = row[9] ? row[9].toString().trim() : '';
+      if (partName && partEmail) {
+        partTimers.push(partEmail);
+        emailToName[partEmail] = partName;
+        allCalendarIds.push(partEmail);
+      }
+    });
+    
+    Logger.log(`メールアドレスシートから取得: マーケティング部${marketingTeam.length}名, その他社員${otherEmployees.length}名, パート${partTimers.length}名`);
+    
+    return {
+      CALENDAR_ID: allCalendarIds,
+      MARKETING_TEAM: marketingTeam,
+      PART_TIMER_TEAM: partTimers,
+      EMAIL_TO_NAME: emailToName,
+      OTHER_EMPLOYEES: otherEmployees
+    };
+    
+  } catch (error) {
+    Logger.log(`メールアドレスシート読み取りエラー: ${error.toString()}`);
+    return getDefaultEmployeeData();
+  }
+}
+
+/**
+ * デフォルトの社員データ（エラー時のフォールバック）
+ * @return {Object} デフォルト社員データ
+ */
+function getDefaultEmployeeData() {
+  Logger.log('デフォルトの社員データを使用します');
+  return {
+    CALENDAR_ID: [],
+    MARKETING_TEAM: [],
+    PART_TIMER_TEAM: [],
+    EMAIL_TO_NAME: {},
+    OTHER_EMPLOYEES: []
+  };
+}
 
 /**
  * チャットワーク設定をスクリプトプロパティから取得
