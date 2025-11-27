@@ -952,6 +952,7 @@ function buildChatworkMessage(meetings, config) {
   
   const details = meetings.map(meeting => {
     const responsible = meeting.responsibleName || '担当者未設定';
+    const responsibleEmail = meeting.responsibleEmail || '';
     const clientOriginal = meeting.clientName || 'クライアント未設定';
     
     // 類似度マッチングで正式な顧客名を検索
@@ -960,7 +961,11 @@ function buildChatworkMessage(meetings, config) {
     // 日付フォーマットを変更（11/26(水)形式）
     const dateFormatted = formatDateForChatwork(meeting.date);
     
-    return `${responsible}さん\n\n${dateFormatted}　${meeting.startTime}～　　${clientFormal} 様`;
+    // チャットワークIDを取得
+    const chatworkId = config.EMAIL_TO_CHATWORK_ID && config.EMAIL_TO_CHATWORK_ID[responsibleEmail];
+    const responsibleWithId = chatworkId ? `${chatworkId}${responsible}` : responsible;
+    
+    return `${responsibleWithId}さん\n\n${dateFormatted}　${meeting.startTime}～　　${clientFormal} 様`;
   }).join('\n\n');
   
   const template = (config.CHATWORK && config.CHATWORK.REMINDER_TEMPLATE) ||
