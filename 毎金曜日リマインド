@@ -132,8 +132,8 @@ function sendChatworkReminder(dateString) {
 function createReminderMessage(dateString) {
   return `[To:5672510]中村 等志さん
 [To:4007358]萩尾 智哉さん
-[To:2374812]倉持 佑吏（毎週水曜日在宅ワーク中）さん
-[CC:4412229]田中穂さん
+[To:2374812]倉持 佑吏さん
+cc[To:4412229]田中穂さん
 【週次レポート記入リマインド】
 
 ${dateString}（金曜日）の週次レポートを追加しました。
