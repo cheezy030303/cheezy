@@ -3,7 +3,7 @@
  */
 
 const SHEET_SETTINGS = [
-  { name: '中村さん', startRow: 1, startCol: 3, numRows: 17, numCols: 10 },
+  { name: '中村さん', startRow: 1, startCol: 3, numRows: 20, numCols: 10 },
   { name: '倉持さん', startRow: 1, startCol: 3, numRows: 18, numCols: 10 },
   { name: '萩尾さん', startRow: 1, startCol: 3, numRows: 17, numCols: 10 },
 ];
@@ -76,6 +76,8 @@ function insertNewProgressTable(spreadsheet, config, timezone) {
 
   insertGoalText(sheet, config);
 
+  setColumnWidths(sheet, config);
+
   previousDateCell.setValue(newDate);
 
   return newDateString;
@@ -131,6 +133,7 @@ function createReminderMessage(dateString) {
   return `[To:5672510]中村 等志さん
 [To:4007358]萩尾 智哉さん
 [To:2374812]倉持 佑吏（毎週水曜日在宅ワーク中）さん
+[CC:4412229]田中穂さん
 【週次レポート記入リマインド】
 
 ${dateString}（金曜日）の週次レポートを追加しました。
@@ -180,15 +183,50 @@ function setupWeeklyTrigger() {
 }
 
 function applyHeaderFormatting(sheet, config) {
+  const headerRow = config.startRow + 3; // 4行目
+  const baseCol = config.startCol; // C列起点
+  
+  // ヘッダー行全体の背景色を設定
   sheet
-    .getRange(config.startRow + 3, config.startCol, 1, config.numCols)
+    .getRange(headerRow, baseCol, 1, config.numCols)
     .setBackground('#808080');
 
-  HEADER_CONFIG.forEach(({ colOffset, value }) => {
-    sheet.getRange(config.startRow + 3, config.startCol + colOffset).setValue(value);
-  });
+  // C列: 現状CPA
+  sheet.getRange(headerRow, baseCol).setValue('現状CPA');
+  
+  // D列: 日予算N（残り日数でのデイリー）を2行で中央揃え
+  const dCell = sheet.getRange(headerRow, baseCol + 1);
+  dCell.setValue('日予算N\n（残り日数でのデイリー）');
+  dCell.setFontColor('#FFFFFF');
+  dCell.setHorizontalAlignment('center');
+  dCell.setVerticalAlignment('middle');
+  dCell.setWrap(true);
+  
+  // E列: 目標配信金額（白文字）
+  const eCell = sheet.getRange(headerRow, baseCol + 2);
+  eCell.setValue('目標配信金額');
+  eCell.setFontColor('#FFFFFF');
+  eCell.setHorizontalAlignment('center');
+  eCell.setVerticalAlignment('middle');
+  
+  // F列: 着地想定配信金額を2行で中央揃え
+  const fCell = sheet.getRange(headerRow, baseCol + 3);
+  fCell.setValue('着地想定\n配信金額');
+  fCell.setFontColor('#FFFFFF');
+  fCell.setHorizontalAlignment('center');
+  fCell.setVerticalAlignment('middle');
+  fCell.setWrap(true);
+  
+  // G列: 達成状況
+  sheet.getRange(headerRow, baseCol + 4).setValue('達成状況');
+  sheet.getRange(headerRow, baseCol + 4).setFontColor('#FFFFFF');
+  
+  // H列: 課題
+  sheet.getRange(headerRow, baseCol + 5).setValue('課題');
+  sheet.getRange(headerRow, baseCol + 5).setFontColor('#FFFFFF');
 
-  const projectStatusRange = sheet.getRange(config.startRow + 3, config.startCol + 6, 1, 3); // columns I-K within range
+  // I-K列: 案件状況（マージ）
+  const projectStatusRange = sheet.getRange(headerRow, baseCol + 6, 1, 3);
   projectStatusRange.merge();
   projectStatusRange.setValue('案件状況');
   projectStatusRange.setFontColor('#FFFFFF');
@@ -268,7 +306,9 @@ function insertGoalText(sheet, config) {
   const cCol = config.startCol; // C列は startCol (3列目)
   let targetRow;
   
-  if (sheetName === '中村さん' || sheetName === '萩尾さん') {
+  if (sheetName === '中村さん') {
+    targetRow = 13; // C13
+  } else if (sheetName === '萩尾さん') {
     targetRow = 11; // C11
   } else if (sheetName === '倉持さん') {
     targetRow = 12; // C12
@@ -279,4 +319,16 @@ function insertGoalText(sheet, config) {
   const goalCell = sheet.getRange(targetRow, cCol);
   goalCell.setValue('今週のゴール（動き切る予定の施策をご記載ください。）');
   goalCell.setFontColor('#FFFFFF');
+}
+
+function setColumnWidths(sheet, config) {
+  const baseCol = config.startCol; // C列起点
+  
+  // I列、J列、K列の幅を170に設定
+  // I列 = baseCol + 6 (C=3, D=4, E=5, F=6, G=7, H=8, I=9)
+  // J列 = baseCol + 7
+  // K列 = baseCol + 8
+  sheet.setColumnWidth(baseCol + 6, 170); // I列
+  sheet.setColumnWidth(baseCol + 7, 170); // J列
+  sheet.setColumnWidth(baseCol + 8, 170); // K列
 }
