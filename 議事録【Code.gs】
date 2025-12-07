@@ -53,8 +53,8 @@ function main() {
     
     // すべての会議データを抽出
     const allMeetingData = [];
-  for (const event of targetEvents) {
-    const meetingData = extractMeetingData(event);
+    for (const event of targetEvents) {
+      const meetingData = extractMeetingData(event);
     if (!meetingData) {
       continue;
     }
@@ -62,8 +62,8 @@ function main() {
       Logger.log(`担当者除外設定のためスキップ: ${meetingData.clientName} - ${meetingData.date} 担当者: ${meetingData.responsiblePersonEmail}`);
       continue;
     }
-    allMeetingData.push(meetingData);
-  }
+      allMeetingData.push(meetingData);
+    }
     
     // スプレッドシートに書き込み
     if (allMeetingData.length > 0) {
@@ -295,11 +295,11 @@ function getResponsiblePerson(event, config) {
   
   const employeeCreator = findFirstMatch(creators, email => isEmployeeEmail(email, config));
   if (employeeCreator && !isExcludedResponsibleEmail(employeeCreator, config)) {
-    return {
+      return {
       name: config.EMAIL_TO_NAME[employeeCreator] || employeeCreator,
       email: employeeCreator
-    };
-  }
+      };
+    }
   
   const employeeGuest = findFirstMatch(guestEmails, email => isEmployeeEmail(email, config));
   if (employeeGuest && !isExcludedResponsibleEmail(employeeGuest, config)) {
@@ -312,11 +312,11 @@ function getResponsiblePerson(event, config) {
   const teamMember = findFirstMatch([...creators, ...guestEmails], email => isTeamMemberEmail(email, config));
   if (teamMember && !isExcludedResponsibleEmail(teamMember, config)) {
     const fallbackEmployee = findFirstMatch(config.MARKETING_TEAM || [], email => !isExcludedResponsibleEmail(email, config));
-    return {
+      return {
       name: fallbackEmployee ? (config.EMAIL_TO_NAME[fallbackEmployee] || fallbackEmployee) : (config.EMAIL_TO_NAME[teamMember] || teamMember),
       email: fallbackEmployee || teamMember
-    };
-  }
+      };
+    }
   
   Logger.log(`警告: チームメンバーが見つからないためデフォルトを使用します: ${event.getTitle()}`);
   const defaultMember = findFirstMatch(config.MARKETING_TEAM || [], email => !isExcludedResponsibleEmail(email, config)) ||
@@ -342,7 +342,7 @@ function getAllMarketingAttendees(event, config) {
     }
     if (isTeamMemberEmail(email, config) && !containsEmail(marketingAttendees, email)) {
       marketingAttendees.push(email);
-    }
+      }
   };
   
   const creators = event.getCreators();
@@ -550,9 +550,9 @@ function setupSheetHeaders(sheet) {
   
   if (!isInitialized) {
     headerRange.setValues([baseHeaders]);
-    headerRange.setFontWeight('bold');
-    headerRange.setBackground('#4285f4');
-    headerRange.setFontColor('#ffffff');
+  headerRange.setFontWeight('bold');
+  headerRange.setBackground('#4285f4');
+  headerRange.setFontColor('#ffffff');
     Logger.log('ヘッダー行を設定しました');
   } else {
     // 担当者メール列が存在しなければ追加
@@ -953,8 +953,10 @@ function findFirstMatch(emails, predicate) {
  */
 function synchronizeRegistrationStatus(sheet, config, targetSpreadsheet) {
   const registeredMeetings = getRegisteredMeetingsFromSpreadsheet(config, targetSpreadsheet);
-  if (registeredMeetings === null) {
-    return;
+  if (registeredMeetings === null || registeredMeetings.length === 0) {
+    if (registeredMeetings === null) {
+      return;
+    }
   }
   updateRegistrationStatusColumn(sheet, registeredMeetings, config);
 }
@@ -963,43 +965,81 @@ function synchronizeRegistrationStatus(sheet, config, targetSpreadsheet) {
  * チャットワークリマインドを送信
  */
 function sendChatworkReminders() {
-  // 営業日チェック
-  const today = new Date();
-  if (!isBusinessDay(today)) {
-    Logger.log('本日は営業日ではないため、リマインド送信をスキップします');
-    return;
+  try {
+    Logger.log('=== チャットワークリマインド送信開始 ===');
+    
+    // 営業日チェック
+    const today = new Date();
+    Logger.log(`本日の日付: ${today.toLocaleString('ja-JP')}`);
+    Logger.log(`営業日チェック: ${isBusinessDay(today) ? '営業日です' : '営業日ではありません'}`);
+    
+    if (!isBusinessDay(today)) {
+      Logger.log('本日は営業日ではないため、リマインド送信をスキップします');
+      SpreadsheetApp.getActiveSpreadsheet().toast('本日は営業日ではありません', 'チャットワークリマインド', 5);
+      return;
+    }
+    
+    const config = getConfig();
+    const chatworkConfig = getChatworkConfig();
+    
+    Logger.log(`チャットワーク有効化: ${chatworkConfig.ENABLED}`);
+    Logger.log(`API_TOKEN設定: ${chatworkConfig.API_TOKEN ? 'あり' : 'なし'}`);
+    Logger.log(`ROOM_ID設定: ${chatworkConfig.ROOM_ID ? 'あり (' + chatworkConfig.ROOM_ID + ')' : 'なし'}`);
+    
+    if (!chatworkConfig.ENABLED) {
+      Logger.log('チャットワーク連携が無効になっています');
+      SpreadsheetApp.getActiveSpreadsheet().toast('チャットワーク連携が無効になっています', 'チャットワークリマインド', 5);
+      return;
+    }
+    
+    if (!chatworkConfig.API_TOKEN || !chatworkConfig.ROOM_ID) {
+      Logger.log('チャットワークの設定が不完全です。スクリプトプロパティを確認してください。');
+      Logger.log('必要なプロパティ: CHATWORK_API_TOKEN, CHATWORK_ROOM_ID');
+      SpreadsheetApp.getActiveSpreadsheet().toast('チャットワークの設定が不完全です。スクリプトプロパティを確認してください。', 'チャットワークリマインド', 10);
+      return;
+    }
+    
+    const spreadsheet = getOrCreateSpreadsheet(config);
+    const sheet = getOrCreateSheet(spreadsheet, config.SHEET_NAME);
+    setupSheetHeaders(sheet);
+    
+    Logger.log('登録状況を同期します...');
+    // 最新の登録状況を反映
+    synchronizeRegistrationStatus(sheet, config, spreadsheet);
+    
+    Logger.log('リマインド対象データを取得します...');
+    const pendingMeetings = getPendingMeetings(sheet, config);
+    Logger.log(`リマインド対象データ: ${pendingMeetings.length}件`);
+    
+    if (pendingMeetings.length === 0) {
+      Logger.log('リマインド対象の未登録データはありません');
+      SpreadsheetApp.getActiveSpreadsheet().toast('リマインド対象の未登録データはありません', 'チャットワークリマインド', 5);
+      return;
+    }
+    
+    // リマインド対象の詳細をログ出力
+    Logger.log('=== リマインド対象データ詳細 ===');
+    pendingMeetings.forEach((meeting, index) => {
+      Logger.log(`${index + 1}. ${meeting.date} ${meeting.startTime} - ${meeting.clientName} (担当: ${meeting.responsibleName})`);
+    });
+    
+    Logger.log('チャットワークメッセージを生成します...');
+    const messageBody = buildChatworkMessage(pendingMeetings, config);
+    Logger.log(`メッセージ内容:\n${messageBody}`);
+    
+    Logger.log('チャットワークへ送信します...');
+    postChatworkMessage(messageBody, chatworkConfig);
+    Logger.log(`チャットワークへ未登録リマインドを送信しました（${pendingMeetings.length}件）`);
+    SpreadsheetApp.getActiveSpreadsheet().toast(`チャットワークへリマインドを送信しました（${pendingMeetings.length}件）`, 'チャットワークリマインド', 5);
+    
+    Logger.log('=== チャットワークリマインド送信完了 ===');
+  } catch (error) {
+    Logger.log(`=== エラーが発生しました ===`);
+    Logger.log(`エラー内容: ${error.toString()}`);
+    Logger.log(`スタックトレース: ${error.stack}`);
+    SpreadsheetApp.getActiveSpreadsheet().toast('エラーが発生しました: ' + error.toString(), 'チャットワークリマインド', 10);
+    throw error;
   }
-  
-  const config = getConfig();
-  const chatworkConfig = getChatworkConfig();
-  
-  if (!chatworkConfig.ENABLED) {
-    Logger.log('チャットワーク連携が無効になっています');
-    return;
-  }
-  
-  if (!chatworkConfig.API_TOKEN || !chatworkConfig.ROOM_ID) {
-    Logger.log('チャットワークの設定が不完全です。スクリプトプロパティを確認してください。');
-    Logger.log('必要なプロパティ: CHATWORK_API_TOKEN, CHATWORK_ROOM_ID');
-    return;
-  }
-  
-  const spreadsheet = getOrCreateSpreadsheet(config);
-  const sheet = getOrCreateSheet(spreadsheet, config.SHEET_NAME);
-  setupSheetHeaders(sheet);
-  
-  // 最新の登録状況を反映
-  synchronizeRegistrationStatus(sheet, config, spreadsheet);
-  
-  const pendingMeetings = getPendingMeetings(sheet, config);
-  if (pendingMeetings.length === 0) {
-    Logger.log('リマインド対象の未登録データはありません');
-    return;
-  }
-  
-  const messageBody = buildChatworkMessage(pendingMeetings, config);
-  postChatworkMessage(messageBody, chatworkConfig);
-  Logger.log(`チャットワークへ未登録リマインドを送信しました（${pendingMeetings.length}件）`);
 }
 
 /**
@@ -1009,8 +1049,13 @@ function sendChatworkReminders() {
  * @return {Array<Object>} 未登録ミーティング
  */
 function getPendingMeetings(sheet, config) {
+  Logger.log('--- getPendingMeetings 開始 ---');
+  
   const lastRow = sheet.getLastRow();
+  Logger.log(`シートの最終行: ${lastRow}`);
+  
   if (lastRow <= 1) {
+    Logger.log('データが存在しません（ヘッダー行のみ）');
     return [];
   }
   
@@ -1028,6 +1073,8 @@ function getPendingMeetings(sheet, config) {
     status: headers.indexOf(statusHeader)
   };
   
+  Logger.log(`列インデックス: ${JSON.stringify(indexes)}`);
+  
   if (indexes.date === -1 || indexes.start === -1 || indexes.end === -1 ||
       indexes.client === -1 || indexes.responsible === -1 || indexes.email === -1 ||
       indexes.status === -1) {
@@ -1042,10 +1089,19 @@ function getPendingMeetings(sheet, config) {
   // 2025/11/26以降の日付フィルタ用の基準日
   const filterDate = new Date(2025, 10, 26); // 2025年11月26日（月は0から始まる）
   filterDate.setHours(0, 0, 0, 0);
+  Logger.log(`日付フィルタ: ${filterDate.toLocaleDateString('ja-JP')}以降のデータのみ対象`);
   
-  dataRange.forEach(row => {
+  let totalCount = 0;
+  let skippedByStatus = 0;
+  let skippedByDate = 0;
+  let skippedByKeyword = 0;
+  
+  dataRange.forEach((row, index) => {
+    totalCount++;
     const statusValue = row[indexes.status];
+    
     if (statusValue && statusValue.toString().trim() !== '') {
+      skippedByStatus++;
       return;
     }
     
@@ -1066,6 +1122,7 @@ function getPendingMeetings(sheet, config) {
       meetingDate.setHours(0, 0, 0, 0);
       
       if (meetingDate < filterDate) {
+        skippedByDate++;
         return; // 2025/11/26より前の日付はスキップ
       }
     } catch (error) {
@@ -1077,6 +1134,7 @@ function getPendingMeetings(sheet, config) {
     const excludedKeywords = config.EXCLUDED_TITLE_KEYWORDS || [];
     if (excludedKeywords.some(keyword => clientValue.includes(keyword))) {
       Logger.log(`除外キーワードによりスキップ: ${clientValue}`);
+      skippedByKeyword++;
       return;
     }
     
@@ -1089,6 +1147,9 @@ function getPendingMeetings(sheet, config) {
       responsibleEmail: responsibleEmail
     });
   });
+  
+  Logger.log(`処理結果: 全${totalCount}件中、済=${skippedByStatus}件、日付フィルタ=${skippedByDate}件、除外キーワード=${skippedByKeyword}件、リマインド対象=${pending.length}件`);
+  Logger.log('--- getPendingMeetings 終了 ---');
   
   return pending;
 }
@@ -1133,39 +1194,50 @@ function buildChatworkMessage(meetings, config) {
 }
 
 /**
- * 顧客一覧_importシートから顧客名マップを取得（類似度マッチング対応）
+ * MK登録済み一覧シートから顧客名マップを取得（類似度マッチング対応）
  * @param {Object} config - 設定オブジェクト
  * @return {Object} 元の顧客名→正式顧客名のマップ
  */
 function getClientNameMap(config) {
   try {
     const spreadsheet = SpreadsheetApp.openById(config.SPREADSHEET_ID);
-    const clientSheet = spreadsheet.getSheetByName('顧客一覧_import');
+    const registrationConfig = config.MK_REGISTRATION_SHEET || {};
+    const sheetName = registrationConfig.LOCAL_SHEET_NAME || 'MK登録済み一覧';
+    const clientSheet = spreadsheet.getSheetByName(sheetName);
     
     if (!clientSheet) {
-      Logger.log('顧客一覧_importシートが見つかりません');
+      Logger.log(`${sheetName}シートが見つかりません`);
       return { formalNames: [] };
     }
     
     const lastRow = clientSheet.getLastRow();
     if (lastRow <= 1) {
-      Logger.log('顧客一覧_importシートにデータがありません');
+      Logger.log(`${sheetName}シートにデータがありません`);
       return { formalNames: [] };
     }
     
-    const formalClientColumnIndex = 1; // B列（0ベースで1）
+    // ヘッダー行を取得して顧客名列のインデックスを特定
+    const headers = clientSheet.getRange(1, 1, 1, clientSheet.getLastColumn()).getValues()[0];
+    const clientHeader = registrationConfig.CLIENT_NAME_COLUMN || '顧客名';
+    const clientColumnIndex = headers.indexOf(clientHeader);
+    
+    if (clientColumnIndex === -1) {
+      Logger.log(`${sheetName}シートに${clientHeader}列が見つかりません`);
+      return { formalNames: [] };
+    }
+    
     const dataRange = clientSheet.getRange(2, 1, lastRow - 1, clientSheet.getLastColumn()).getValues();
     
-    // B列から正式な顧客名一覧を取得
+    // O列（顧客名列）から正式な顧客名一覧を取得
     const formalClientNames = [];
     dataRange.forEach(row => {
-      const formalClient = row[formalClientColumnIndex] ? row[formalClientColumnIndex].toString().trim() : '';
+      const formalClient = row[clientColumnIndex] ? row[clientColumnIndex].toString().trim() : '';
       if (formalClient && !formalClientNames.includes(formalClient)) {
         formalClientNames.push(formalClient);
       }
     });
     
-    Logger.log(`顧客一覧_importシートから${formalClientNames.length}件の顧客名を取得しました`);
+    Logger.log(`${sheetName}シートの${clientHeader}列から${formalClientNames.length}件の顧客名を取得しました`);
     return { formalNames: formalClientNames };
   } catch (error) {
     Logger.log(`顧客名マップ取得エラー: ${error.toString()}`);
@@ -1530,44 +1602,58 @@ function getRegisteredMeetingsFromSpreadsheet(config, targetSpreadsheet) {
   const values = dataSheet.getDataRange().getValues();
   if (values.length <= 1) {
     Logger.log('登録済みシートにデータがないため、比較をスキップします');
-    return new Set();
+    return [];
   }
   
   const headers = values[0];
   const dateHeader = registrationConfig.DATE_COLUMN || '実施日';
   const employeeHeader = registrationConfig.EMPLOYEE_NAME_COLUMN || '従業員名';
+  const clientHeader = registrationConfig.CLIENT_NAME_COLUMN || '顧客名';
   
   const dateIndex = headers.indexOf(dateHeader);
   const employeeIndex = headers.indexOf(employeeHeader);
+  const clientIndex = headers.indexOf(clientHeader);
   
   if (dateIndex === -1 || employeeIndex === -1) {
     Logger.log(`登録済みシートに必要な列が見つかりません。必要: ${dateHeader}, ${employeeHeader}`);
     return null;
   }
   
-  const registeredMeetings = new Set();
+  if (clientIndex === -1) {
+    Logger.log(`警告: ${clientHeader}列が見つかりません。クライアント名の照合はスキップされます`);
+  }
+  
+  const registeredMeetings = [];
   for (let i = 1; i < values.length; i++) {
     const row = values[i];
     const dateValue = normalizeDateValue(row[dateIndex], timezone);
     const employeeName = normalizeEmployeeName(row[employeeIndex]);
+    const clientName = clientIndex !== -1 && row[clientIndex] ? row[clientIndex].toString().trim() : '';
     
     if (dateValue && employeeName) {
-      registeredMeetings.add(buildMeetingKeyByDateAndEmployee(dateValue, employeeName));
+      registeredMeetings.push({
+        date: dateValue,
+        employee: employeeName,
+        client: clientName
+      });
     }
   }
   
-  Logger.log(`${sourceType === 'local' ? 'ローカル' : '外部'}シートから${registeredMeetings.size}件の登録済みデータを取得しました`);
+  Logger.log(`${sourceType === 'local' ? 'ローカル' : '外部'}シートから${registeredMeetings.length}件の登録済みデータを取得しました`);
   return registeredMeetings;
 }
 
 /**
  * ステータス列を更新
+ * 照合方法: 議事録シートの日付(A列) + 参加者(G列) と MK登録済み一覧シートの実施日(C列) + 従業員名(N列) を照合
+ * ※参加者(G列)の中に、MK登録済み一覧シートのN列の従業員名が含まれていれば「済」と表示
  * @param {Sheet} sheet - 議事録シート
- * @param {Set} registeredMeetings - 登録済み会議キーのセット
+ * @param {Array} registeredMeetings - 登録済み会議データの配列
  * @param {Object} config - 設定オブジェクト
  */
 function updateRegistrationStatusColumn(sheet, registeredMeetings, config) {
-  if (!registeredMeetings) {
+  if (!registeredMeetings || registeredMeetings.length === 0) {
+    Logger.log('登録済みデータがないため、ステータス更新をスキップします');
     return;
   }
   
@@ -1596,21 +1682,32 @@ function updateRegistrationStatusColumn(sheet, registeredMeetings, config) {
   const participantRange = sheet.getRange(2, participantIndex + 1, lastRow - 1, 1).getValues();
   const statusValueText = (config.MK_REGISTRATION_SHEET && config.MK_REGISTRATION_SHEET.STATUS_VALUE) || '済';
   
+  let matchCount = 0;
   for (let i = 0; i < statusValues.length; i++) {
     const dateValue = normalizeDateValue(dateRange[i][0], timezone);
     const participantList = participantRange[i][0] ? participantRange[i][0].toString() : '';
     
     if (dateValue && participantList) {
-      // 参加者リストから個別の名前を抽出
+      // 参加者リストから個別の名前を抽出（G列の参加者を使用）
       const participants = participantList.split(',').map(name => normalizeEmployeeName(name));
       
-      // 各参加者について登録済みかチェック
+      // 各参加者について登録済みかチェック（日付と参加者名で照合）
       let isRegistered = false;
+      let matchedParticipant = '';
       for (const participant of participants) {
         if (participant) {
-          const key = buildMeetingKeyByDateAndEmployee(dateValue, participant);
-          if (registeredMeetings.has(key)) {
+          // 日付とG列の参加者名で照合（MK登録済み一覧シートのN列と比較）
+          const match = registeredMeetings.find(registered => {
+            // 名前の異体字（はしご高など）を正規化して比較
+            const normalizedParticipant = normalizeNameVariants(participant);
+            const normalizedEmployee = normalizeNameVariants(registered.employee);
+            return registered.date === dateValue && normalizedEmployee === normalizedParticipant;
+          });
+          
+          if (match) {
             isRegistered = true;
+            matchedParticipant = participant;
+            matchCount++;
             break;
           }
         }
@@ -1621,6 +1718,8 @@ function updateRegistrationStatusColumn(sheet, registeredMeetings, config) {
       statusValues[i][0] = '';
     }
   }
+  
+  Logger.log(`MKシステム登録状況の更新が完了しました（${matchCount}件が「${statusValueText}」になりました）`);
   
   statusRange.setValues(statusValues);
   Logger.log('MKシステム登録状況の更新が完了しました');
@@ -1736,6 +1835,55 @@ function normalizeEmployeeName(value) {
     return '';
   }
   return value.toString().trim();
+}
+
+/**
+ * 名前の異体字を正規化（はしご高、旧字体などを統一）
+ * @param {String} name - 名前
+ * @return {String} 正規化された名前
+ */
+function normalizeNameVariants(name) {
+  if (!name) {
+    return '';
+  }
+  
+  let normalized = name.toString().trim();
+  
+  // よくある異体字を通常の文字に変換
+  const variantMap = {
+    // はしご高
+    '髙': '高',
+    '﨑': '崎',
+    '﨑': '崎',
+    // 旧字体
+    '邊': '辺',
+    '邉': '辺',
+    '辻': '辻',
+    '󠄀': '', // 異体字セレクタを除去
+    '󠄁': '',
+    '󠄂': '',
+    // その他よくある異体字
+    '德': '徳',
+    '吉': '吉', // 土吉
+    '﨑': '崎',
+    '濵': '浜',
+    '濱': '浜',
+    '澤': '沢',
+    '澤': '沢',
+    '齋': '斎',
+    '齊': '斉',
+    '龍': '竜'
+  };
+  
+  // 異体字を置換
+  for (const [variant, standard] of Object.entries(variantMap)) {
+    normalized = normalized.replace(new RegExp(variant, 'g'), standard);
+  }
+  
+  // Unicode正規化（NFKCで統一）
+  normalized = normalized.normalize('NFKC');
+  
+  return normalized;
 }
 
 /**
@@ -1940,6 +2088,10 @@ function onOpen() {
     .addSeparator()
     .addItem('リマインド自動送信を設定（毎日10:00）', 'setupChatworkReminderTrigger')
     .addItem('リマインド自動送信を解除', 'deleteChatworkReminderTrigger')
+    .addSeparator()
+    .addSubMenu(ui.createMenu('デバッグ・テスト')
+      .addItem('リマインド対象データを確認', 'debugPendingReminders')
+      .addItem('チャットワーク設定をテスト', 'testChatworkConfig'))
     .addToUi();
 }
 
@@ -2291,50 +2443,101 @@ function testSingleEvent() {
  */
 function debugPendingReminders() {
   try {
+    Logger.log('=== デバッグモード: リマインド対象データ確認 ===');
+    
     const config = getConfig();
+    const chatworkConfig = getChatworkConfig();
+    
+    // チャットワーク設定を確認
+    Logger.log('--- チャットワーク設定 ---');
+    Logger.log(`ENABLED: ${chatworkConfig.ENABLED}`);
+    Logger.log(`API_TOKEN: ${chatworkConfig.API_TOKEN ? '設定済み（' + chatworkConfig.API_TOKEN.substring(0, 10) + '...）' : '未設定'}`);
+    Logger.log(`ROOM_ID: ${chatworkConfig.ROOM_ID ? '設定済み（' + chatworkConfig.ROOM_ID + '）' : '未設定'}`);
+    Logger.log('');
+    
     const spreadsheet = getOrCreateSpreadsheet(config);
     const sheet = getOrCreateSheet(spreadsheet, config.SHEET_NAME);
+    
+    // 最新の登録状況を反映
+    Logger.log('登録状況を同期します...');
+    synchronizeRegistrationStatus(sheet, config, spreadsheet);
+    
     const pending = getPendingMeetings(sheet, config);
     
     Logger.log('=== リマインド対象の会議データ ===');
     Logger.log(`合計: ${pending.length}件`);
     Logger.log('');
     
-    pending.forEach((meeting, index) => {
-      Logger.log(`--- ${index + 1}件目 ---`);
-      Logger.log(`日付: ${meeting.date}`);
-      Logger.log(`開始時刻: ${meeting.startTime}`);
-      Logger.log(`クライアント名: ${meeting.clientName}`);
-      Logger.log(`担当者: ${meeting.responsiblePerson}`);
-      Logger.log(`担当者メール: ${meeting.responsibleEmail}`);
-      Logger.log(`参加者: ${meeting.participants}`);
+    if (pending.length === 0) {
+      Logger.log('⚠️ リマインド対象データが0件です');
+      Logger.log('考えられる原因:');
+      Logger.log('1. すべて「済」になっている');
+      Logger.log('2. 2025/11/26より前のデータしかない');
+      Logger.log('3. 除外キーワードに該当している');
+      SpreadsheetApp.getActiveSpreadsheet().toast('リマインド対象データが0件です。ログを確認してください。', 'デバッグ', 10);
+    } else {
+      pending.forEach((meeting, index) => {
+        Logger.log(`--- ${index + 1}件目 ---`);
+        Logger.log(`日付: ${meeting.date}`);
+        Logger.log(`開始時刻: ${meeting.startTime}`);
+        Logger.log(`クライアント名: ${meeting.clientName}`);
+        Logger.log(`担当者: ${meeting.responsibleName}`);
+        Logger.log(`担当者メール: ${meeting.responsibleEmail}`);
+        Logger.log('');
+      });
+      
+      // メッセージを生成してみる
+      Logger.log('=== 生成されるメッセージ ===');
+      const messageBody = buildChatworkMessage(pending, config);
+      Logger.log(messageBody);
       Logger.log('');
-    });
+      
+      SpreadsheetApp.getActiveSpreadsheet().toast(`リマインド対象: ${pending.length}件。ログを確認してください。`, 'デバッグ', 5);
+    }
     
     Logger.log('=== デバッグ完了 ===');
     
-    // エイチームウェルネスを検索
-    const hitamune = pending.filter(m => 
-      m.clientName && (
-        m.clientName.includes('エイチーム') || 
-        m.clientName.includes('ウェルネス') ||
-        m.clientName.includes('hitamune') ||
-        m.clientName.includes('HITAMUNE')
-      )
-    );
+  } catch (error) {
+    Logger.log(`=== デバッグエラー ===`);
+    Logger.log(`エラー: ${error.toString()}`);
+    Logger.log(`スタックトレース: ${error.stack}`);
+    SpreadsheetApp.getActiveSpreadsheet().toast('デバッグエラー: ' + error.toString(), 'デバッグ', 10);
+  }
+}
+
+/**
+ * デバッグ用: チャットワーク設定をテスト
+ */
+function testChatworkConfig() {
+  try {
+    Logger.log('=== チャットワーク設定テスト ===');
     
-    if (hitamune.length > 0) {
-      Logger.log('⚠️ エイチームウェルネス関連のデータが見つかりました:');
-      hitamune.forEach(m => {
-        Logger.log(`  - ${m.date} ${m.startTime} ${m.clientName} (担当者: ${m.responsiblePerson})`);
-      });
-    } else {
-      Logger.log('✓ エイチームウェルネス関連のデータは見つかりませんでした');
+    const chatworkConfig = getChatworkConfig();
+    
+    Logger.log(`ENABLED: ${chatworkConfig.ENABLED}`);
+    Logger.log(`API_TOKEN: ${chatworkConfig.API_TOKEN ? '設定済み' : '未設定'}`);
+    Logger.log(`ROOM_ID: ${chatworkConfig.ROOM_ID || '未設定'}`);
+    
+    if (!chatworkConfig.API_TOKEN || !chatworkConfig.ROOM_ID) {
+      Logger.log('⚠️ チャットワーク設定が不完全です');
+      SpreadsheetApp.getActiveSpreadsheet().toast('チャットワーク設定が不完全です。ログを確認してください。', 'テスト', 10);
+      return;
     }
     
+    // テストメッセージを送信
+    const testMessage = '[テスト] チャットワーク連携テスト\n\nこのメッセージは設定確認用のテストメッセージです。';
+    Logger.log('テストメッセージを送信します...');
+    
+    postChatworkMessage(testMessage, chatworkConfig);
+    
+    Logger.log('✓ テストメッセージの送信に成功しました');
+    SpreadsheetApp.getActiveSpreadsheet().toast('テストメッセージを送信しました。チャットワークを確認してください。', 'テスト', 5);
+    
   } catch (error) {
-    Logger.log(`デバッグエラー: ${error.toString()}`);
-    Logger.log(error.stack);
+    Logger.log(`=== エラー ===`);
+    Logger.log(`エラー: ${error.toString()}`);
+    Logger.log(`スタックトレース: ${error.stack}`);
+    SpreadsheetApp.getActiveSpreadsheet().toast('エラー: ' + error.toString(), 'テスト', 10);
   }
 }
 
