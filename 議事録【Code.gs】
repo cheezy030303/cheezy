@@ -1086,8 +1086,8 @@ function getPendingMeetings(sheet, config) {
   const timezone = config.TIMEZONE || Session.getScriptTimeZone();
   const pending = [];
   
-  // 2025/11/26以降の日付フィルタ用の基準日
-  const filterDate = new Date(2025, 10, 26); // 2025年11月26日（月は0から始まる）
+  // 2025/12/11以降の日付フィルタ用の基準日
+  const filterDate = new Date(2025, 11, 11); // 2025年12月11日（月は0から始まる）
   filterDate.setHours(0, 0, 0, 0);
   Logger.log(`日付フィルタ: ${filterDate.toLocaleDateString('ja-JP')}以降のデータのみ対象`);
   
@@ -1116,14 +1116,14 @@ function getPendingMeetings(sheet, config) {
       return;
     }
     
-    // 日付フィルタリング：2025/11/26以降のデータのみ対象
+    // 日付フィルタリング：2025/12/11以降のデータのみ対象
     try {
       const meetingDate = new Date(dateValue);
       meetingDate.setHours(0, 0, 0, 0);
       
       if (meetingDate < filterDate) {
         skippedByDate++;
-        return; // 2025/11/26より前の日付はスキップ
+        return; // 2025/12/11より前の日付はスキップ
       }
     } catch (error) {
       Logger.log(`日付解析エラー（スキップします）: ${dateValue} - ${error.toString()}`);
@@ -1184,7 +1184,7 @@ function buildChatworkMessage(meetings, config) {
     const chatworkId = config.EMAIL_TO_CHATWORK_ID && config.EMAIL_TO_CHATWORK_ID[responsibleEmail];
     const responsibleWithId = chatworkId ? `${chatworkId}${responsible}` : responsible;
     
-    return `${responsibleWithId}さん\n\n${dateFormatted}　${meeting.startTime}～　　${clientFormal} 様`;
+    return `${responsibleWithId}さん\n${dateFormatted}　${meeting.startTime}～　　${clientFormal} 様`;
   }).join('\n\n');
   
   const template = (config.CHATWORK && config.CHATWORK.REMINDER_TEMPLATE) ||
@@ -1249,7 +1249,7 @@ function getClientNameMap(config) {
  * 手書きクライアント名に最も類似する正式名称を検索
  * @param {String} handwrittenName - 手書きのクライアント名
  * @param {Array} formalNames - 正式名称の配列
- * @return {String} 最も類似する正式名称（見つからない場合は元の名前）
+ * @return {String} 最も類似する正式名称（必ずO列の正式名称を返す）
  */
 function findSimilarClientName(handwrittenName, formalNames) {
   if (!handwrittenName || !formalNames || formalNames.length === 0) {
@@ -1259,6 +1259,7 @@ function findSimilarClientName(handwrittenName, formalNames) {
   // 完全一致チェック
   const exactMatch = formalNames.find(name => name === handwrittenName);
   if (exactMatch) {
+    Logger.log(`完全一致: "${handwrittenName}" → "${exactMatch}"`);
     return exactMatch;
   }
   
@@ -1276,33 +1277,58 @@ function findSimilarClientName(handwrittenName, formalNames) {
     return reverseMatch;
   }
   
-  // 会社名キーワードマッチング
-  const companyKeywords = extractCompanyKeywords(handwrittenName);
-  if (companyKeywords.length > 0) {
-    for (const keyword of companyKeywords) {
-      const keywordMatch = formalNames.find(name => name.includes(keyword));
+  // 会社名キーワードマッチング（双方向チェック）
+  const handwrittenKeywords = extractCompanyKeywords(handwrittenName);
+  if (handwrittenKeywords.length > 0) {
+    // まず、手書き名のキーワードが正式名称に含まれるかチェック
+    for (const keyword of handwrittenKeywords) {
+      const keywordMatch = formalNames.find(name => {
+        const formalKeywords = extractCompanyKeywords(name);
+        // キーワード同士の一致をチェック
+        return formalKeywords.some(fk => fk.includes(keyword) || keyword.includes(fk));
+      });
       if (keywordMatch) {
         Logger.log(`キーワード一致発見: "${handwrittenName}" (${keyword}) → "${keywordMatch}"`);
         return keywordMatch;
       }
     }
+    
+    // 次に、正式名称のキーワードが手書き名に含まれるかチェック
+    for (const formalName of formalNames) {
+      const formalKeywords = extractCompanyKeywords(formalName);
+      for (const fk of formalKeywords) {
+        if (handwrittenKeywords.some(hk => hk.includes(fk) || fk.includes(hk))) {
+          Logger.log(`逆キーワード一致発見: "${handwrittenName}" ← "${formalName}" (${fk})`);
+          return formalName;
+        }
+      }
+    }
   }
   
   // 類似度スコア計算（レーベンシュタイン距離ベース）
-  let bestMatch = handwrittenName;
+  let bestMatch = handwrittenName; // デフォルトは元の名前
   let bestScore = 0;
-  const threshold = 0.6; // 類似度の閾値
+  const SIMILARITY_THRESHOLD = 0.3; // 類似度の最低閾値（30%未満は元の名前を使用）
   
   formalNames.forEach(formalName => {
     const similarity = calculateSimilarity(handwrittenName, formalName);
-    if (similarity > bestScore && similarity >= threshold) {
+    if (similarity > bestScore) {
       bestScore = similarity;
       bestMatch = formalName;
     }
   });
   
-  if (bestMatch !== handwrittenName) {
-    Logger.log(`類似度マッチング発見: "${handwrittenName}" → "${bestMatch}" (類似度: ${bestScore.toFixed(2)})`);
+  // 類似度が閾値未満の場合は元の名前を使用
+  if (bestScore < SIMILARITY_THRESHOLD) {
+    Logger.log(`⚠️ 類似度が低すぎるため元の名前を使用: "${handwrittenName}" (最高類似度: ${(bestScore * 100).toFixed(1)}%)`);
+    return handwrittenName;
+  }
+  
+  // 類似度が閾値以上の場合は正式名称を使用
+  if (bestScore < 0.6) {
+    Logger.log(`⚠️ 低類似度マッチング: "${handwrittenName}" → "${bestMatch}" (類似度: ${(bestScore * 100).toFixed(1)}%)`);
+  } else {
+    Logger.log(`類似度マッチング: "${handwrittenName}" → "${bestMatch}" (類似度: ${(bestScore * 100).toFixed(1)}%)`);
   }
   
   return bestMatch;
@@ -1316,9 +1342,12 @@ function findSimilarClientName(handwrittenName, formalNames) {
 function extractCompanyKeywords(companyName) {
   const keywords = [];
   
-  // 「株式会社」「有限会社」「合同会社」などを除去
+  // 「株式会社」「有限会社」「合同会社」などの法人格、敬称、一般的な接尾辞を除去
   let cleanName = companyName
     .replace(/株式会社|有限会社|合同会社|合資会社|一般社団法人|公益社団法人|一般財団法人|公益財団法人/g, '')
+    .replace(/様|さま|御中/g, '') // 敬称を除去
+    .replace(/コンセプト提案MTG|打ち合わせ|ミーティング|MTG|会議|打合せ|商談|面談|訪問/g, '') // 一般的なミーティング用語を除去
+    .replace(/との|とのミーティング|との打ち合わせ|との商談/g, '') // 助詞を除去
     .replace(/\s+/g, '') // 空白除去
     .trim();
   
@@ -1330,6 +1359,11 @@ function extractCompanyKeywords(companyName) {
         keywords.push(match);
       }
     });
+  }
+  
+  // 元の文字列もキーワードとして追加（全体マッチング用）
+  if (cleanName.length >= 2) {
+    keywords.unshift(cleanName); // 最初に追加（優先度を上げる）
   }
   
   return keywords;
@@ -2472,7 +2506,7 @@ function debugPendingReminders() {
       Logger.log('⚠️ リマインド対象データが0件です');
       Logger.log('考えられる原因:');
       Logger.log('1. すべて「済」になっている');
-      Logger.log('2. 2025/11/26より前のデータしかない');
+      Logger.log('2. 2025/12/11より前のデータしかない');
       Logger.log('3. 除外キーワードに該当している');
       SpreadsheetApp.getActiveSpreadsheet().toast('リマインド対象データが0件です。ログを確認してください。', 'デバッグ', 10);
     } else {
@@ -2540,4 +2574,3 @@ function testChatworkConfig() {
     SpreadsheetApp.getActiveSpreadsheet().toast('エラー: ' + error.toString(), 'テスト', 10);
   }
 }
-
